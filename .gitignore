@@ -1,0 +1,4 @@
+.agent/
+.vscode/
+.env
+pragma.exe
