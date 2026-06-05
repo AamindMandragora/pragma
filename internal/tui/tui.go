@@ -2,12 +2,12 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/AamindMandragora/pragma/internal/agent"
-	"github.com/AamindMandragora/pragma/internal/tools"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -57,6 +57,21 @@ type TUIModel struct {
 
 func (t TUIModel) Init() tea.Cmd {
 	return textinput.Blink
+}
+
+func firstArg(argsJSON string) string {
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &m); err != nil {
+		return ""
+	}
+	for _, v := range m {
+		s := fmt.Sprintf("%v", v)
+		if len(s) > 80 {
+			s = s[:80] + "..."
+		}
+		return s
+	}
+	return ""
 }
 
 func (t *TUIModel) updateViewportContent() {
@@ -182,7 +197,12 @@ func (t TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case toolMessage:
 		switch msg.eventType {
 		case "tool_call":
-			t.messages = append(t.messages, Message{Role: "tool_call", Content: msg.name + " " + msg.content})
+			arg := firstArg(msg.content)
+			display := msg.name
+			if arg != "" {
+				display = fmt.Sprintf("%s [%s]", msg.name, arg)
+			}
+			t.messages = append(t.messages, Message{Role: "tool_call", Content: display})
 			t.updateViewportContent()
 		case "tool_result":
 			content := msg.content
@@ -251,7 +271,7 @@ func (t TUIModel) View() string {
 	return b.String()
 }
 
-func Start(a *agent.Agent, runTool *tools.RunCommandTool, setProg func(*tea.Program)) {
+func Start(a *agent.Agent, setProg func(*tea.Program)) {
 	ti := textinput.New()
 	ti.Placeholder = "Ask pragma..."
 	ti.Focus()
@@ -266,13 +286,17 @@ func Start(a *agent.Agent, runTool *tools.RunCommandTool, setProg func(*tea.Prog
 	m := TUIModel{agent: a, input: ti, viewport: vp, width: 80, confirmChan: confirmChan}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
-	a.OnEvent = func(event agent.AgentEvent) {
-		p.Send(toolMessage{eventType: event.Type, name: event.Name, content: event.Content})
+	a.Registry.Confirm = func(toolName string, summary string) bool {
+		p.Send(confirmMessage{command: fmt.Sprintf("[%s] %s", toolName, summary)})
+		return <-confirmChan
 	}
 
-	runTool.Confirm = func(command string) bool {
-		p.Send(confirmMessage{command: command})
-		return <-confirmChan
+	a.OnEvent = func(event agent.AgentEvent) {
+		content := event.Content
+		if event.Type == "tool_call" {
+			content = event.Args
+		}
+		p.Send(toolMessage{eventType: event.Type, name: event.Name, content: content})
 	}
 
 	if setProg != nil {

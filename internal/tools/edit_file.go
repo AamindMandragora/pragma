@@ -21,6 +21,24 @@ func (e *EditFileTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type": "object","properties": {"path": {"type": "string", "description": "Path to the file to edit"}, "old_text": {"type": "string", "description": "Exact text to find and replace. Must match the file content exactly including whitespace and indentation."}, "new_text": {"type": "string", "description": "Text to replace old_text with. Can be empty to delete the matched text."}},"required": ["path", "old_text", "new_text"]}`)
 }
 
+func (e* EditFileTool) ConfirmSummary(args json.RawMessage) string {
+	var params struct {
+		Path    string `json:"path"`
+		OldText string `json:"old_text"`
+		NewText string `json:"new_text"`
+	}
+	json.Unmarshal(args, &params)
+	old := params.OldText
+	if len(old) > 150 {
+		old = old[:150] + "..."
+	}
+	new := params.NewText
+	if len(new) > 150 {
+		new = new[:150] + "..."
+	}
+	return fmt.Sprintf("%s\n  - %s\n  + %s", params.Path, old, new)
+}
+
 func (e EditFileTool) Execute(args json.RawMessage) (string, error) {
 	var params struct {
 		Path    string `json:"path"`

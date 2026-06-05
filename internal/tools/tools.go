@@ -14,8 +14,14 @@ type Tool interface {
 	Execute(args json.RawMessage) (string, error)
 }
 
+type ConfirmableTool interface {
+	Tool
+	ConfirmSummary(args json.RawMessage) string
+}
+
 type Registry struct {
-	Tools map[string]Tool
+	Tools   map[string]Tool
+	Confirm func(toolName string, summary string) bool
 }
 
 func NewRegistry() *Registry {
@@ -38,6 +44,14 @@ func (r *Registry) Dispatch(name string, args json.RawMessage) (string, error) {
 	tool, ok := r.Tools[name]
 	if !ok {
 		return "", errors.New("Tool not found")
+	}
+	if r.Confirm != nil {
+		if ct, ok := tool.(ConfirmableTool); ok {
+			summary := ct.ConfirmSummary(args)
+			if !r.Confirm(ct.Name(), summary) {
+				return "Rejected by user", nil
+			}
+		}
 	}
 	return tool.Execute(args)
 }

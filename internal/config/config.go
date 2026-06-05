@@ -10,6 +10,7 @@ type ModelConfig struct {
 	Provider      string `toml:"provider"`
 	ModelName     string `toml:"model_name"`
 	ApiKeyVarName string `toml:"api_key_var_name"`
+	ToolMode      string `toml:"tool_mode"`
 }
 
 type BehaviorConfig struct {

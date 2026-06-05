@@ -101,14 +101,27 @@ func launchTUI() {
 	default:
 		baseURL = "https://openrouter.ai/api/v1"
 	}
+	toolMode := cfg.Model.ToolMode
+	if toolMode == "" || toolMode == "auto" {
+		switch cfg.Model.Provider {
+		case "openrouter":
+			toolMode = "text"
+		case "openai":
+			toolMode = "native"
+		default:
+			toolMode = "text"
+		}
+	}
 	provider := llm.OpenRouterProvider{BaseURL: baseURL, APIKey: key}
 	providerConfig := llm.ProviderConfig{ModelName: cfg.Model.ModelName, MaxTokens: cfg.Behavior.MaxOutputTokens, Temperature: 0.0}
+
 	registry := tools.NewRegistry()
 	registry.Register(&tools.ReadFileTool{})
 	registry.Register(&tools.WriteFileTool{})
 	registry.Register(&tools.EditFileTool{})
-	runTool := &tools.RunCommandTool{}
-	registry.Register(runTool)
-	a := agent.NewAgent(provider, providerConfig, registry)
-	tui.Start(a, runTool, nil)
+	registry.Register(&tools.RunCommandTool{})
+	registry.Register(&tools.WebFetchTool{})
+
+	a := agent.NewAgent(provider, providerConfig, registry, toolMode)
+	tui.Start(a, nil)
 }
