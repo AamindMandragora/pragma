@@ -117,12 +117,15 @@ func launchTUI() {
 	provider := llm.OpenRouterProvider{BaseURL: baseURL, APIKey: key}
 	providerConfig := llm.ProviderConfig{ModelName: cfg.Model.ModelName, MaxTokens: cfg.Behavior.MaxOutputTokens, Temperature: 0.0}
 
+	manager := process.NewManager()
+
 	registry := tools.NewRegistry()
 	registry.Register(&tools.ReadFileTool{})
 	registry.Register(&tools.WriteFileTool{})
 	registry.Register(&tools.EditFileTool{})
-	registry.Register(&tools.RunCommandTool{Manager: process.NewManager(), Timeout: 5 * time.Second})
+	registry.Register(&tools.RunCommandTool{Manager: manager, Timeout: 5 * time.Second})
 	registry.Register(&tools.WebFetchTool{})
+	tools.LoadPlugins(registry, ".agent/tools", manager)
 
 	a := agent.NewAgent(provider, providerConfig, registry, toolMode)
 	tui.Start(a, nil)

@@ -45,12 +45,10 @@ func (r *Registry) Dispatch(name string, args json.RawMessage) (string, error) {
 	if !ok {
 		return "", errors.New("Tool not found")
 	}
-	if r.Confirm != nil {
-		if ct, ok := tool.(ConfirmableTool); ok {
-			summary := ct.ConfirmSummary(args)
-			if !r.Confirm(ct.Name(), summary) {
-				return "Rejected by user", nil
-			}
+	if ct, ok := tool.(ConfirmableTool); ok {
+		summary := ct.ConfirmSummary(args)
+		if summary != "" && !r.Confirm(ct.Name(), summary) {
+			return "Rejected by user", nil
 		}
 	}
 	return tool.Execute(args)
