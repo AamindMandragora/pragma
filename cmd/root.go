@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/AamindMandragora/pragma/internal/agent"
 	"github.com/AamindMandragora/pragma/internal/config"
 	"github.com/AamindMandragora/pragma/internal/db"
 	"github.com/AamindMandragora/pragma/internal/llm"
+	"github.com/AamindMandragora/pragma/internal/process"
 	"github.com/AamindMandragora/pragma/internal/tools"
 	"github.com/AamindMandragora/pragma/internal/tui"
 	"github.com/spf13/cobra"
@@ -119,7 +121,7 @@ func launchTUI() {
 	registry.Register(&tools.ReadFileTool{})
 	registry.Register(&tools.WriteFileTool{})
 	registry.Register(&tools.EditFileTool{})
-	registry.Register(&tools.RunCommandTool{})
+	registry.Register(&tools.RunCommandTool{Manager: process.NewManager(), Timeout: 5 * time.Second})
 	registry.Register(&tools.WebFetchTool{})
 
 	a := agent.NewAgent(provider, providerConfig, registry, toolMode)
