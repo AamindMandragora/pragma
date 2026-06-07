@@ -25,11 +25,21 @@ type Agent struct {
 	History        []llm.Message
 	OnEvent        func(AgentEvent)
 	ToolMode       string
+	taskStart      int
 }
 
 func NewAgent(provider llm.Provider, providerConfig llm.ProviderConfig, registry *tools.Registry, toolMode string) *Agent {
 	a := &Agent{Provider: provider, ProviderConfig: providerConfig, Registry: registry, ToolMode: toolMode}
-	a.History = []llm.Message{{Role: "system", Content: a.buildSystemPrompt()}}
+	prompt := a.buildSystemPrompt()
+	arch := loadArchitecture()
+	if arch != "" {
+		prompt += "\n# Project Context\n\n" + arch + "\n"
+	}
+	recent := loadRecentDocs(5)
+	if recent != "" {
+		prompt += "\n# Recent Changes\n\n" + recent + "\n"
+	}
+	a.History = []llm.Message{{Role: "system", Content: prompt}}
 	return a
 }
 
@@ -57,6 +67,7 @@ You have tools available to read files, write files, and run commands. Use them 
 
 - Use read_file to inspect code before editing it.
 - Use write_file to create or overwrite files.
+- When using write_file to create a markdown file, do not write it in the form of a code block. ALWAYS output raw markdown directly. You may still have code blocks within the raw markdown for different languages.
 - Use edit_file to make targeted changes to existing files. Provide the exact text to replace and the new text.
 - NEVER use write_file to modify an existing file. Always use edit_file. If edit_file fails because of a text mismatch, use read_file to see the exact content, then retry edit_file with the correct text.
 - Use run_command to execute shell commands, run tests, or build the project.
@@ -128,9 +139,11 @@ func (a *Agent) emit(event AgentEvent) {
 }
 
 func (a *Agent) Run(ctx context.Context, message string) (string, error) {
+	a.taskStart = len(a.History)
 	a.History = append(a.History, llm.Message{Role: "user", Content: message})
 	callIndex := 0
-	for i := 0; i < 20; i++ {
+	usedTools := false
+	for range 20 {
 		var toolDefs []llm.ToolDef
 		if a.ToolMode == "native" {
 			toolDefs = a.Registry.List()
@@ -165,8 +178,15 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 		}
 		if len(toolCalls) == 0 {
 			a.History = append(a.History, llm.Message{Role: "assistant", Content: cleanText})
+			if usedTools {
+				if summary, err := a.generateDoc(ctx); err == nil {
+					a.saveDoc(summary)
+					a.updateArchitecture(ctx, summary)
+				}
+			}
 			return strings.TrimSpace(cleanText), nil
 		}
+		usedTools = true
 		a.History = append(a.History, llm.Message{Role: "assistant", Content: text.String(), TCs: toolCalls})
 		for _, tc := range toolCalls {
 			a.emit(AgentEvent{Type: "tool_call", Name: tc.Name, Args: string(tc.Args)})
