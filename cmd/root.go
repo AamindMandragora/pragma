@@ -46,16 +46,27 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "Print version information")
-	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "Path to custom configuration file")
+	rootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "print version information")
+	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "path to custom configuration file")
 }
 
 func launchTUI() {
-	fmt.Println("Starting pragma TUI...")
 	if configFile != "" {
-		fmt.Printf("Loading config from: %s\n", configFile)
+		os.MkdirAll(".agent", 0755)
+		data, err := os.ReadFile(configFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return
+		}
+		os.WriteFile(".agent/config.toml", data, 0644)
 	}
-	cfg, err := config.Load(configFile)
+	if _, err := os.Stat(".agent/config.toml"); os.IsNotExist(err) {
+		tui.Start(nil, nil)
+		if _, err := os.Stat(".agent/config.toml"); os.IsNotExist(err) {
+			return
+		}
+	}
+	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return

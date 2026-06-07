@@ -36,10 +36,10 @@ func Get() *Config {
 	return cfg
 }
 
-func Load(path string) (*Config, error) {
+func Load() (*Config, error) {
 	var model = ModelConfig{
 		Provider:      "openai",
-		ModelName:     "gpt-4.1-mini",
+		ModelName:     "gpt-5.4-mini",
 		ApiKeyVarName: "OPENAI_API_KEY",
 	}
 	var behavior = BehaviorConfig{
@@ -56,27 +56,17 @@ func Load(path string) (*Config, error) {
 		Behavior: behavior,
 		Context:  context,
 	}
-	if path != "" {
-		var bytes, err = os.ReadFile(path)
-		if err != nil {
-			return cfg, err
-		}
+	var bytes, err = os.ReadFile(".agent/config.toml")
+	if err == nil {
 		if err := toml.Unmarshal(bytes, cfg); err != nil {
 			return cfg, err
 		}
 	} else {
-		var bytes, err = os.ReadFile(".agent/config.toml")
+		var homeDir, _ = os.UserHomeDir()
+		bytes, err = os.ReadFile(homeDir + "/.config/pragma/config.toml")
 		if err == nil {
 			if err := toml.Unmarshal(bytes, cfg); err != nil {
 				return cfg, err
-			}
-		} else {
-			var homeDir, _ = os.UserHomeDir()
-			bytes, err = os.ReadFile(homeDir + "/.config/pragma/config.toml")
-			if err == nil {
-				if err := toml.Unmarshal(bytes, cfg); err != nil {
-					return cfg, err
-				}
 			}
 		}
 	}

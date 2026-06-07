@@ -80,7 +80,7 @@ func (a *Agent) saveDoc(summary string) error {
 	return os.WriteFile(".agent/docs/commits/"+timestamp+".md", []byte(doc.String()), 0644)
 }
 
-func loadArchitecture() string {
+func LoadArchitecture() string {
 	data, err := os.ReadFile(".agent/docs/ARCHITECTURE.md")
 	if err != nil {
 		return ""
@@ -88,7 +88,7 @@ func loadArchitecture() string {
 	return string(data)
 }
 
-func loadRecentDocs(n int) string {
+func LoadRecentDocs(n int) string {
 	entries, err := os.ReadDir(".agent/docs/commits/")
 	if err != nil {
 		return ""
@@ -109,7 +109,7 @@ func loadRecentDocs(n int) string {
 }
 
 func (a *Agent) updateArchitecture(ctx context.Context, summary string) {
-	existing := loadArchitecture()
+	existing := LoadArchitecture()
 	prompt := `You maintain a living architecture document for a software project. It has three sections:
 
 # Current State

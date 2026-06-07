@@ -31,11 +31,11 @@ type Agent struct {
 func NewAgent(provider llm.Provider, providerConfig llm.ProviderConfig, registry *tools.Registry, toolMode string) *Agent {
 	a := &Agent{Provider: provider, ProviderConfig: providerConfig, Registry: registry, ToolMode: toolMode}
 	prompt := a.buildSystemPrompt()
-	arch := loadArchitecture()
+	arch := LoadArchitecture()
 	if arch != "" {
 		prompt += "\n# Project Context\n\n" + arch + "\n"
 	}
-	recent := loadRecentDocs(5)
+	recent := LoadRecentDocs(5)
 	if recent != "" {
 		prompt += "\n# Recent Changes\n\n" + recent + "\n"
 	}
