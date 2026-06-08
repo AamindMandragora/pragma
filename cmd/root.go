@@ -1,11 +1,8 @@
 package cmd
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/AamindMandragora/pragma/internal/agent"
@@ -23,6 +20,7 @@ const Version = "1.0.0"
 var (
 	configFile  string
 	showVersion bool
+	budget      float64
 )
 
 var rootCmd = &cobra.Command{
@@ -48,6 +46,7 @@ func Execute() {
 func init() {
 	rootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "print version information")
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "path to custom configuration file")
+	rootCmd.PersistentFlags().Float64VarP(&budget, "budget", "b", 0, "max dollar budget for this session")
 }
 
 func launchTUI() {
@@ -81,63 +80,38 @@ func launchTUI() {
 		fmt.Fprintln(os.Stderr, err)
 		return
 	}
-	data, err := os.ReadFile(".env")
-	var key string = ""
-
-	if err == nil {
-		scanner := bufio.NewScanner(bytes.NewReader(data))
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			if strings.HasPrefix(line, cfg.Model.ApiKeyVarName+"=") {
-				parts := strings.SplitN(line, "=", 2)
-				key = strings.Trim(parts[1], `"' `)
-				break
-			}
+	var tiers []llm.ModelTier
+	for _, t := range cfg.Model.Tiers {
+		p := llm.MakeProvider(t.ProviderName, t.ApiKeyVarName)
+		if t.ApiKeyVarName == "" {
+			fmt.Fprintf(os.Stderr, "API key not set for tier %s: export %s=<key>\n", t.Model, t.ApiKeyVarName)
+			return
 		}
-	}
-	if key == "" {
-		key = os.Getenv(cfg.Model.ApiKeyVarName)
-	}
-	if key == "" {
-		fmt.Fprintf(os.Stderr, "Api key not set: export %s=<your key>\n", cfg.Model.ApiKeyVarName)
-		return
-	}
-	var baseURL string
-	switch cfg.Model.Provider {
-	case "openrouter":
-		baseURL = "https://openrouter.ai/api/v1"
-	case "openai":
-		baseURL = "https://api.openai.com/v1"
-	default:
-		baseURL = "https://openrouter.ai/api/v1"
-	}
-	toolMode := cfg.Model.ToolMode
-	if toolMode == "" || toolMode == "auto" {
-		switch cfg.Model.Provider {
-		case "openrouter":
-			toolMode = "text"
-		case "openai":
-			toolMode = "native"
-		default:
-			toolMode = "text"
+		maxTokens := t.MaxTokens
+		if maxTokens == 0 {
+			maxTokens = 4096
 		}
+		model := &llm.Model{
+			Name:        t.Model,
+			MaxTokens:   maxTokens,
+			Temperature: t.Temperature,
+			Provider:    p,
+			ToolMode:    llm.ToolModeForProvider(t.ProviderName),
+		}
+		tiers = append(tiers, llm.ModelTier{Model: model, Threshold: t.Threshold})
 	}
-	provider := llm.OpenRouterProvider{BaseURL: baseURL, APIKey: key}
-	providerConfig := llm.ProviderConfig{ModelName: cfg.Model.ModelName, MaxTokens: cfg.Behavior.MaxOutputTokens, Temperature: 0.0}
 
 	manager := process.NewManager()
-
 	registry := tools.NewRegistry()
 	registry.Register(&tools.ReadFileTool{})
 	registry.Register(&tools.WriteFileTool{})
 	registry.Register(&tools.EditFileTool{})
-	registry.Register(&tools.RunCommandTool{Manager: manager, Timeout: 5 * time.Second})
+	registry.Register(&tools.RunCommandTool{Manager: manager, Timeout: 5 * time.Minute})
 	registry.Register(&tools.WebFetchTool{})
 	tools.LoadPlugins(registry, ".agent/tools", manager)
 
-	a := agent.NewAgent(provider, providerConfig, registry, toolMode)
+	a := agent.NewAgent(tiers[0].Model, registry)
+	a.Budget = budget
+	a.ModelTiers = tiers
 	tui.Start(a, nil)
 }

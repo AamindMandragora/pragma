@@ -4,20 +4,19 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"fmt"
-	"strings"
-
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
-type OpenRouterProvider struct {
+type OpenAIProvider struct {
+	BaseProvider
 	BaseURL string
-	APIKey  string
 }
 
-type chatChunk struct {
+type openAIChunk struct {
 	Choices []struct {
 		Delta struct {
 			Content   string `json:"content"`
@@ -31,12 +30,24 @@ type chatChunk struct {
 			} `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
+	Model string `json:"model"`
 }
 
-func (o OpenRouterProvider) Chat(ctx context.Context, messages []Message, tools []ToolDef, config ProviderConfig) (<-chan StreamEvent, error) {
-	bodyMap := map[string]interface{}{"model": config.ModelName, "messages": toAPIMessages(messages), "stream": true, "max_tokens": config.MaxTokens, "temperature": config.Temperature}
+func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []ToolDef, model Model) (<-chan StreamEvent, error) {
+	bodyMap := map[string]interface{}{
+		"model":                 model.Name,
+		"messages":              o.toAPIMessages(messages),
+		"stream":                true,
+		"max_completion_tokens": model.MaxTokens,
+		"temperature":           model.Temperature,
+		"stream_options":        map[string]interface{}{"include_usage": true},
+	}
 	if len(tools) > 0 {
-		bodyMap["tools"] = toAPITools(tools)
+		bodyMap["tools"] = o.toAPITools(tools)
 	}
 	body, err := json.Marshal(bodyMap)
 	if err != nil {
@@ -82,9 +93,12 @@ func (o OpenRouterProvider) Chat(ctx context.Context, messages []Message, tools 
 				continue
 			}
 			data := strings.TrimPrefix(line, "data: ")
-			var chunk chatChunk
+			var chunk openAIChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 				continue
+			}
+			if chunk.Usage != nil {
+				ch <- StreamEvent{Type: "usage", Usage: &TokenUsage{InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens, Model: chunk.Model}}
 			}
 			if len(chunk.Choices) == 0 {
 				continue
@@ -113,7 +127,7 @@ func (o OpenRouterProvider) Chat(ctx context.Context, messages []Message, tools 
 	return ch, nil
 }
 
-func toAPIMessages(messages []Message) []map[string]interface{} {
+func (o *OpenAIProvider) toAPIMessages(messages []Message) []map[string]interface{} {
 	var m []map[string]interface{}
 	for _, message := range messages {
 		switch message.Role {
@@ -132,7 +146,7 @@ func toAPIMessages(messages []Message) []map[string]interface{} {
 	return m
 }
 
-func toAPITools(tools []ToolDef) []map[string]interface{} {
+func (o *OpenAIProvider) toAPITools(tools []ToolDef) []map[string]interface{} {
 	var m []map[string]interface{}
 	for _, tool := range tools {
 		m = append(m, map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": tool.Name, "description": tool.Description, "parameters": tool.InputSchema}})

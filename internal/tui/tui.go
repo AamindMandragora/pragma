@@ -50,22 +50,23 @@ const (
 )
 
 type TUIModel struct {
-	agent       *agent.Agent
-	input       textinput.Model
-	viewport    viewport.Model
-	messages    []Message
-	streaming   bool
-	width       int
-	height      int
-	confirming  bool
-	confirmCmd  string
-	confirmChan chan bool
-	state       TUIState
-	onboardStep int
-	onboardData map[string]string
+	agent        *agent.Agent
+	input        textinput.Model
+	viewport     viewport.Model
+	messages     []Message
+	streaming    bool
+	width        int
+	height       int
+	confirming   bool
+	confirmCmd   string
+	confirmChan  chan bool
+	state        TUIState
+	onboardStep  int
+	onboardData  map[string]string
+	onboardTiers []map[string]string
 }
 
-func (t TUIModel) Init() tea.Cmd {
+func (t *TUIModel) Init() tea.Cmd {
 	return textinput.Blink
 }
 
@@ -153,14 +154,17 @@ func (t *TUIModel) handleSlashCommand(cmd string) string {
 	switch command {
 	case "/help":
 		return `Available commands:
-  /help        — show this message
-  /clear       — clear chat history
-  /status      — show session info
-  /model       — show current model and tool mode
-  /docs        — show recent task summaries
-  /arch        — show architecture doc
-  /cost        — show token usage (coming soon)
-  /quit        — exit Pragma`
+  /help           — show this message
+  /clear          — clear chat history
+  /status         — show session info
+  /model          — show current model and tool mode
+  /switch <model> — switch to a different model
+  /budget [amount] — show or set dollar budget
+  /tiers          — show configured model tiers
+  /cost           — show token usage and cost
+  /docs           — show recent task summaries
+  /arch           — show architecture doc
+  /quit           — exit Pragma`
 	case "/clear":
 		t.messages = t.messages[:0]
 		if len(t.agent.History) > 0 {
@@ -169,9 +173,7 @@ func (t *TUIModel) handleSlashCommand(cmd string) string {
 		return "Chat cleared."
 	case "/status":
 		msgCount := len(t.agent.History) - 1
-		return fmt.Sprintf("Messages: %d | Model: %s | Tool mode: %s", msgCount, t.agent.ProviderConfig.ModelName, t.agent.ToolMode)
-	case "/model":
-		return fmt.Sprintf("Provider config:\n  Model: %s\n  Max tokens: %d\n  Tool mode: %s", t.agent.ProviderConfig.ModelName, t.agent.ProviderConfig.MaxTokens, t.agent.ToolMode)
+		return fmt.Sprintf("Messages: %d | Model: %s | Tool mode: %s", msgCount, t.agent.CurrentModel.Name, t.agent.CurrentModel.ToolMode)
 	case "/docs":
 		recent := agent.LoadRecentDocs(3)
 		if recent == "" {
@@ -184,6 +186,55 @@ func (t *TUIModel) handleSlashCommand(cmd string) string {
 			return "No architecture doc yet."
 		}
 		return arch
+	case "/cost":
+		if t.agent == nil {
+			return "No agent running."
+		}
+		msg := fmt.Sprintf("Current task: %d in / %d out | Task Cost: $%.4f | Session Cost: $%.4f | Model: '%s'", t.agent.TaskInputTokens, t.agent.TaskOutputTokens, t.agent.TaskCost, t.agent.SessionCost, t.agent.LastModelUsed)
+		if t.agent.Budget > 0 {
+			pct := (t.agent.SessionCost / t.agent.Budget) * 100
+			msg += fmt.Sprintf("\nBudget: $%.2f (%.1f%% used)", t.agent.Budget, pct)
+		}
+		return msg
+	case "/model":
+		m := t.agent.CurrentModel
+		return fmt.Sprintf("Model: %s\n  Max tokens: %d\n  Tool mode: %s\n  Provider: %s", m.Name, m.MaxTokens, m.ToolMode, m.Provider.GetName())
+	case "/switch":
+		if len(parts) < 2 {
+			return "Usage: /switch <model_name>"
+		}
+		for _, tier := range t.agent.ModelTiers {
+			if strings.Contains(tier.Model.Name, parts[1]) {
+				t.agent.CurrentModel = tier.Model
+				return fmt.Sprintf("Switched to %s (%s)", tier.Model.Name, tier.Model.ToolMode)
+			}
+		}
+		return fmt.Sprintf("No tier matching '%s'. Type /tiers to see available.", parts[1])
+	case "/tiers":
+		var out strings.Builder
+		for _, tier := range t.agent.ModelTiers {
+			marker := "  "
+			if tier.Model.Name == t.agent.CurrentModel.Name {
+				marker = "→ "
+			}
+			out.WriteString(fmt.Sprintf("%s%s (%s) at %.0f%%\n", marker, tier.Model.Name, tier.Model.ToolMode, tier.Threshold*100))
+		}
+		return out.String()
+	case "/budget":
+		if len(parts) < 2 {
+			if t.agent.Budget > 0 {
+				pct := (t.agent.SessionCost / t.agent.Budget) * 100
+				return fmt.Sprintf("Budget: $%.2f (%.1f%% used)", t.agent.Budget, pct)
+			}
+			return "No budget set. Usage: /budget <amount>"
+		}
+		var amount float64
+		fmt.Sscanf(parts[1], "%f", &amount)
+		if amount <= 0 {
+			return "Budget must be positive."
+		}
+		t.agent.Budget = amount
+		return fmt.Sprintf("Budget set to $%.2f", amount)
 	case "/quit":
 		return "EXIT"
 	default:
@@ -191,7 +242,7 @@ func (t *TUIModel) handleSlashCommand(cmd string) string {
 	}
 }
 
-func (t TUIModel) updateOnboarding(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (t *TUIModel) updateOnboarding(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		t.width = msg.Width
@@ -207,29 +258,64 @@ func (t TUIModel) updateOnboarding(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.input.SetValue("")
 
 			switch t.onboardStep {
-			case 0:
-				if val == "2" {
+			case 0, 4:
+				switch val {
+				case "2":
 					t.onboardData["provider"] = "openai"
 					t.onboardData["api_key_var"] = "OPENAI_API_KEY"
 					t.onboardData["default_model"] = "gpt-5.4-mini"
-				} else {
+				case "3":
+					t.onboardData["provider"] = "anthropic"
+					t.onboardData["api_key_var"] = "ANTHROPIC_API_KEY"
+					t.onboardData["default_model"] = "claude-3-5-sonnet-latest"
+				default:
 					t.onboardData["provider"] = "openrouter"
 					t.onboardData["api_key_var"] = "OPENROUTER_API_KEY"
 					t.onboardData["default_model"] = "qwen/qwen3-coder:free"
 				}
-				t.onboardStep = 1
+				t.onboardStep++
 				t.input.Placeholder = "Model name [" + t.onboardData["default_model"] + "]"
 
-			case 1:
+			case 1, 5:
 				if val == "" {
 					val = t.onboardData["default_model"]
 				}
 				t.onboardData["model"] = val
-				t.onboardStep = 2
-				t.input.Placeholder = "Paste API key (or enter to skip)"
+				t.onboardStep++
+				if t.onboardStep == 2 {
+					t.input.Placeholder = "Paste API key (or enter to skip)"
+				} else {
+					t.input.Placeholder = "Fallback cost threshold fraction e.g. 0.5 [0.5]"
+				}
 
 			case 2:
 				t.onboardData["api_key"] = val
+				t.onboardData["threshold"] = "0.0"
+				t.onboardTiers = append(t.onboardTiers, t.onboardData)
+				t.onboardData = make(map[string]string)
+				t.onboardStep = 3
+				t.input.Placeholder = "y/n [n]"
+
+			case 3:
+				if strings.ToLower(val) == "y" || strings.ToLower(val) == "yes" {
+					t.onboardStep = 4
+					t.input.Placeholder = "Type 1, 2 or 3"
+				} else {
+					t.writeOnboardConfig()
+					return t, tea.Quit
+				}
+
+			case 6:
+				if val == "" {
+					val = "0.5"
+				}
+				t.onboardData["threshold"] = val
+				t.onboardStep = 7
+				t.input.Placeholder = "Paste fallback API key (or enter to skip)"
+
+			case 7:
+				t.onboardData["api_key"] = val
+				t.onboardTiers = append(t.onboardTiers, t.onboardData)
 				t.writeOnboardConfig()
 				return t, tea.Quit
 			}
@@ -241,7 +327,7 @@ func (t TUIModel) updateOnboarding(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return t, cmd
 }
 
-func (t TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		t.width = msg.Width
@@ -331,6 +417,9 @@ func (t TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			t.messages = append(t.messages, Message{Role: "tool_result", Content: content})
 			t.updateViewportContent()
+		case "cost":
+			t.messages = append(t.messages, Message{Role: "system", Content: msg.content})
+			t.updateViewportContent()
 		}
 	case confirmMessage:
 		t.confirming = true
@@ -375,7 +464,7 @@ func wrap(text string, width int) string {
 	return result.String()
 }
 
-func (t TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (t *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch t.state {
 	case StateOnboarding:
 		return t.updateOnboarding(msg)
@@ -385,32 +474,70 @@ func (t TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return t, nil
 }
 
-func (t TUIModel) viewOnboarding() string {
+func (t *TUIModel) viewOnboarding() string {
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString(agentStyle.Render("  ◆ Welcome to Pragma"))
+	b.WriteString(agentStyle.Render("  ◆ Welcome to Pragma Setup"))
 	b.WriteString("\n\n")
 
 	switch t.onboardStep {
 	case 0:
-		b.WriteString("  Which LLM provider?\n\n")
-		b.WriteString("  1. OpenRouter (access to many models)\n")
-		b.WriteString("  2. OpenAI\n\n")
-		b.WriteString(dimStyle.Render("  Type 1 or 2 and press enter"))
+		b.WriteString("  [1/2] Select primary LLM provider:\n\n")
+		b.WriteString("  1. OpenRouter (Access any model tier)\n")
+		b.WriteString("  2. OpenAI\n")
+		b.WriteString("  3. Anthropic\n\n")
+		b.WriteString(dimStyle.Render("  Type 1, 2, or 3 and hit Enter"))
 		b.WriteString("\n")
 	case 1:
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  Provider: %s", t.onboardData["provider"])))
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Provider Chosen: %s", t.onboardData["provider"])))
 		b.WriteString("\n\n")
-		b.WriteString("  Enter model name:\n")
+		b.WriteString("  Enter primary model ID string:\n")
 		b.WriteString(dimStyle.Render(fmt.Sprintf("  Press enter for default: %s", t.onboardData["default_model"])))
 		b.WriteString("\n")
 	case 2:
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  Provider: %s", t.onboardData["provider"])))
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Provider Chosen: %s", t.onboardData["provider"])))
 		b.WriteString("\n")
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  Model: %s", t.onboardData["model"])))
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Model Chosen: %s", t.onboardData["model"])))
 		b.WriteString("\n\n")
-		b.WriteString("  Paste your API key:\n")
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  Press enter to set %s later", t.onboardData["api_key_var"])))
+		b.WriteString("  Paste your primary API key string:\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Press enter to specify %s in your context environment later", t.onboardData["api_key_var"])))
+		b.WriteString("\n")
+	case 3:
+		b.WriteString(agentStyle.Render("  ✔ Primary Tier Configured Successfully!"))
+		b.WriteString("\n\n")
+		b.WriteString("  Would you like to configure a secondary/cheaper fallback model tier?\n")
+		b.WriteString(dimStyle.Render("  Type y/n (Defaults to no)"))
+		b.WriteString("\n")
+	case 4:
+		b.WriteString("  [2/2] Select fallback LLM provider:\n\n")
+		b.WriteString("  1. OpenRouter\n")
+		b.WriteString("  2. OpenAI\n")
+		b.WriteString("  3. Anthropic\n\n")
+		b.WriteString(dimStyle.Render("  Type 1, 2, or 3 and hit Enter"))
+		b.WriteString("\n")
+	case 5:
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Fallback Provider Chosen: %s", t.onboardData["provider"])))
+		b.WriteString("\n\n")
+		b.WriteString("  Enter fallback model ID string:\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Press enter for default: %s", t.onboardData["default_model"])))
+		b.WriteString("\n")
+	case 6:
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Fallback Provider Chosen: %s", t.onboardData["provider"])))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Fallback Model Chosen: %s", t.onboardData["model"])))
+		b.WriteString("\n\n")
+		b.WriteString("  At what percentage of total dollar budget should we downgrade to this model?\n")
+		b.WriteString(dimStyle.Render("  Enter decimal between 0.0 and 1.0 (e.g. 0.5 = 50% budget consumed)"))
+		b.WriteString("\n")
+	case 7:
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Fallback Provider Chosen: %s", t.onboardData["provider"])))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Fallback Model Chosen: %s", t.onboardData["model"])))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Fallback Switch Point: %s", t.onboardData["threshold"])))
+		b.WriteString("\n\n")
+		b.WriteString("  Paste your fallback API key string:\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Press enter to look up %s out of environment variables later", t.onboardData["api_key_var"])))
 		b.WriteString("\n")
 	}
 
@@ -423,31 +550,37 @@ func (t TUIModel) viewOnboarding() string {
 
 func (t *TUIModel) writeOnboardConfig() {
 	os.MkdirAll(".agent", 0755)
-	config := fmt.Sprintf(`[model]
-provider = "%s"
-model_name = "%s"
-api_key_var_name = "%s"
-tool_mode = "auto"
 
-[behavior]
+	var tiersBuilder strings.Builder
+	for _, tier := range t.onboardTiers {
+		tiersBuilder.WriteString("[[model.tiers]]\n")
+		tiersBuilder.WriteString(fmt.Sprintf("model = \"%s\"\n", tier["model"]))
+		tiersBuilder.WriteString(fmt.Sprintf("provider = \"%s\"\n", tier["provider"]))
+		tiersBuilder.WriteString(fmt.Sprintf("api_key_var_name = \"%s\"\n", tier["api_key_var"]))
+		tiersBuilder.WriteString(fmt.Sprintf("threshold = %s\n\n", tier["threshold"]))
+	}
+
+	config := fmt.Sprintf(`%s[behavior]
 verbosity = "minimal"
 test_policy = "none"
 max_output_tokens = 4096
-`, t.onboardData["provider"], t.onboardData["model"], t.onboardData["api_key_var"])
+`, tiersBuilder.String())
 
 	os.WriteFile(".agent/config.toml", []byte(config), 0644)
 
-	if t.onboardData["api_key"] != "" {
-		envLine := fmt.Sprintf("%s=%s\n", t.onboardData["api_key_var"], t.onboardData["api_key"])
-		f, err := os.OpenFile(".env", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err == nil {
-			f.WriteString(envLine)
-			f.Close()
+	f, err := os.OpenFile(".env", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		defer f.Close()
+		for _, tier := range t.onboardTiers {
+			if tier["api_key"] != "" {
+				envLine := fmt.Sprintf("%s=%s\n", tier["api_key_var"], tier["api_key"])
+				f.WriteString(envLine)
+			}
 		}
 	}
 }
 
-func (t TUIModel) viewChat() string {
+func (t *TUIModel) viewChat() string {
 	var b strings.Builder
 	b.WriteString(dimStyle.Render("  pragma v1.0.0 -- ctrl+c to quit"))
 	b.WriteString("\n")
@@ -463,7 +596,7 @@ func (t TUIModel) viewChat() string {
 	return b.String()
 }
 
-func (t TUIModel) View() string {
+func (t *TUIModel) View() string {
 	switch t.state {
 	case StateOnboarding:
 		return t.viewOnboarding()
@@ -487,13 +620,23 @@ func Start(a *agent.Agent, setProg func(*tea.Program)) {
 	state := StateChat
 	if a == nil {
 		state = StateOnboarding
-		ti.Placeholder = ""
+		ti.Placeholder = "Type 1, 2 or 3"
 	} else {
 		ti.Placeholder = "Ask pragma..."
 	}
 
-	m := TUIModel{agent: a, input: ti, viewport: vp, width: 80, confirmChan: confirmChan, state: state, onboardData: make(map[string]string)}
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	m := TUIModel{
+		agent:        a,
+		input:        ti,
+		viewport:     vp,
+		width:        80,
+		confirmChan:  confirmChan,
+		state:        state,
+		onboardData:  make(map[string]string),
+		onboardTiers: []map[string]string{},
+	}
+
+	p := tea.NewProgram(&m, tea.WithAltScreen())
 
 	if a != nil && a.Registry != nil {
 		a.Registry.Confirm = func(toolName string, summary string) bool {

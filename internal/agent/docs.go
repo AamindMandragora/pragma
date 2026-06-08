@@ -15,8 +15,6 @@ func (a *Agent) generateDoc(ctx context.Context) (string, error) {
 	taskHistory := a.History[a.taskStart:]
 	history := make([]llm.Message, len(taskHistory))
 	copy(history, taskHistory)
-	docsConfig := a.ProviderConfig
-	docsConfig.MaxTokens = 500
 	history = append(history, llm.Message{Role: "user", Content: `Write a task summary for what just happened. Follow this format exactly:
 
 WHAT: One sentence on what was done.
@@ -26,7 +24,7 @@ FILES: Already tracked separately, do not list them.
 OPEN: Any unresolved questions, deferred decisions, or follow-up work. Write "None" if there are none.
 
 Be specific. Reference function names, file paths, and technical details. Do not pad with filler. Under 150 words total.`})
-	ch, err := a.Provider.Chat(ctx, history, nil, docsConfig)
+	ch, err := a.CurrentModel.Provider.Chat(ctx, history, nil, *a.CurrentModel)
 	if err != nil {
 		return "", err
 	}
@@ -110,40 +108,58 @@ func LoadRecentDocs(n int) string {
 
 func (a *Agent) updateArchitecture(ctx context.Context, summary string) {
 	existing := LoadArchitecture()
-	prompt := `You maintain a living architecture document for a software project. It has three sections:
 
-# Current State
-A module-by-module map of the codebase. For each module: its purpose in one line, the key files, and any important types or interfaces it exports. Update this when new modules are added, existing ones change responsibility, or files are created/deleted/renamed.
+	prompt := `Based on this task summary, output ONLY the changes needed to the architecture doc. Use this exact format:
 
-# Key Decisions
-A running log of architectural choices. Each entry is one line: what was decided, what alternative was rejected, and why. Only add entries when the task summary mentions a deliberate choice between alternatives. Do not fabricate decisions that aren't evidenced in the summary.
+SECTION: Current State
+ADD: <new line to add>
+REMOVE: <exact line to remove>
 
-# Roadmap
-Three subsections:
-- NEXT: Work explicitly identified as the immediate next step
-- DEFERRED: Work mentioned but explicitly postponed, with the reason
-- BLOCKED: Work that can't proceed until something else is done, with the dependency
+SECTION: Key Decisions
+ADD: <new line to add>
 
-When a task completes something from the roadmap, move it to Current State and remove it from here. When a task reveals new work, add it to the appropriate subsection. Never remove roadmap items silently — either complete them or note why they were dropped.
+SECTION: Roadmap > NEXT
+ADD: <new item>
+REMOVE: <completed item>
+
+SECTION: Roadmap > DEFERRED
+ADD: <new item>
+
+SECTION: Roadmap > BLOCKED
+ADD: <new item>
 
 Rules:
-- Preserve all existing content unless the task summary directly contradicts or completes it
-- Do not invent information not present in the task summary or existing doc
-- Do not wrap output in code fences
-- Output only the raw markdown
+- Only output sections that need changes. Omit unchanged sections entirely.
+- Each ADD or REMOVE is one line.
+- REMOVE must match existing text exactly.
+- If no changes are needed, output: NO CHANGES
+- Do not output the full document. Only output the diff.
 `
 	if existing == "" {
-		prompt += "No architecture doc exists yet. Create one from scratch based on this task summary.\n\n"
-	} else {
-		prompt += "Here is the current ARCHITECTURE.md:\n\n" + existing + "\n\n"
-	}
-	prompt += "Task summary:\n" + summary
+		prompt = `Create a brief architecture document with three sections: Current State, Key Decisions, and Roadmap (with subsections NEXT, DEFERRED, BLOCKED). Base it on this task summary. Keep each entry to one line. Do not wrap in code fences. Output raw markdown only.
 
-	config := a.ProviderConfig
-	config.MaxTokens = 1000
-	ch, err := a.Provider.Chat(ctx, []llm.Message{
-		{Role: "user", Content: prompt},
-	}, nil, config)
+Task summary:
+` + summary
+		ch, err := a.CurrentModel.Provider.Chat(ctx, []llm.Message{{Role: "user", Content: prompt}}, nil, *a.CurrentModel)
+		if err != nil {
+			return
+		}
+		var text strings.Builder
+		for event := range ch {
+			if event.Type == "text" {
+				text.WriteString(event.Text)
+			}
+		}
+		if text.Len() > 0 {
+			os.MkdirAll(".agent/docs/", 0755)
+			os.WriteFile(".agent/docs/ARCHITECTURE.md", []byte(text.String()+"\n"), 0644)
+		}
+		return
+	}
+
+	prompt += "\nCurrent ARCHITECTURE.md:\n" + existing + "\n\nTask summary:\n" + summary
+
+	ch, err := a.CurrentModel.Provider.Chat(ctx, []llm.Message{{Role: "user", Content: prompt}}, nil, *a.CurrentModel)
 	if err != nil {
 		return
 	}
@@ -153,9 +169,26 @@ Rules:
 			text.WriteString(event.Text)
 		}
 	}
-	text.WriteString("\n")
-	if text.Len() > 0 {
-		os.MkdirAll(".agent/docs/", 0755)
-		os.WriteFile(".agent/docs/ARCHITECTURE.md", []byte(text.String()), 0644)
+	response := strings.TrimSpace(text.String())
+	if response == "NO CHANGES" || response == "" {
+		return
 	}
+	applyArchitectureChanges(existing, response)
+}
+
+func applyArchitectureChanges(existing string, changes string) {
+	doc := existing
+	lines := strings.Split(changes, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ADD: ") {
+			entry := strings.TrimPrefix(line, "ADD: ")
+			doc = strings.TrimRight(doc, "\n") + "\n" + entry + "\n"
+		} else if strings.HasPrefix(line, "REMOVE: ") {
+			entry := strings.TrimPrefix(line, "REMOVE: ")
+			doc = strings.Replace(doc, entry+"\n", "", 1)
+		}
+	}
+	os.MkdirAll(".agent/docs/", 0755)
+	os.WriteFile(".agent/docs/ARCHITECTURE.md", []byte(doc), 0644)
 }

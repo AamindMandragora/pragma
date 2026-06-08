@@ -6,17 +6,22 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+type TierConfig struct {
+	Model         string  `toml:"model"`
+	ProviderName  string  `toml:"provider"`
+	ApiKeyVarName string  `toml:"api_key_var_name"`
+	Temperature   float64 `toml:"temperature"`
+	MaxTokens     int     `toml:"max_tokens"`
+	Threshold     float64 `toml:"threshold"`
+}
+
 type ModelConfig struct {
-	Provider      string `toml:"provider"`
-	ModelName     string `toml:"model_name"`
-	ApiKeyVarName string `toml:"api_key_var_name"`
-	ToolMode      string `toml:"tool_mode"`
+	Tiers []TierConfig `toml:"tiers"`
 }
 
 type BehaviorConfig struct {
-	Verbosity       string `toml:"verbosity"`
-	TestPolicy      string `toml:"test_policy"`
-	MaxOutputTokens int    `toml:"max_output_tokens"`
+	Verbosity  string `toml:"verbosity"`
+	TestPolicy string `toml:"test_policy"`
 }
 
 type ContextConfig struct {
@@ -37,15 +42,19 @@ func Get() *Config {
 }
 
 func Load() (*Config, error) {
-	var model = ModelConfig{
-		Provider:      "openai",
-		ModelName:     "gpt-5.4-mini",
+	var tier = TierConfig{
+		Model:         "gpt-5.4-mini",
+		ProviderName:  "openai",
 		ApiKeyVarName: "OPENAI_API_KEY",
+		Temperature:   0.7,
+		Threshold:     0,
+	}
+	var model = ModelConfig{
+		Tiers: []TierConfig{tier},
 	}
 	var behavior = BehaviorConfig{
-		Verbosity:       "minimal",
-		TestPolicy:      "none",
-		MaxOutputTokens: 4096,
+		Verbosity:  "minimal",
+		TestPolicy: "none",
 	}
 	var context = ContextConfig{
 		MaxInputTokens: 4096,
