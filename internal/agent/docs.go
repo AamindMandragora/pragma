@@ -11,7 +11,9 @@ import (
 	"github.com/AamindMandragora/pragma/internal/llm"
 )
 
+// sends a message to the provider asking it to generate a document summarizing what it did in response to the user's request
 func (a *Agent) generateDoc(ctx context.Context) (string, error) {
+	// starts history at the user's chat
 	taskHistory := a.History[a.taskStart:]
 	history := make([]llm.Message, len(taskHistory))
 	copy(history, taskHistory)
@@ -40,13 +42,17 @@ Be specific. Reference function names, file paths, and technical details. Do not
 	return text.String(), nil
 }
 
+// writes the summary string to a document
 func (a *Agent) saveDoc(summary string) error {
-	err := os.MkdirAll(".agent/docs/commits/", 0755)
+	// creates the tasks folder
+	err := os.MkdirAll(".agent/docs/tasks/", 0755)
 	if err != nil {
 		return err
 	}
+
 	timestamp := time.Now().Format("2006-01-02_150405")
 
+	// loops through all tool calls and finds the ones that edited a file, then records the files they wrote
 	var files []string
 	for _, msg := range a.History[a.taskStart:] {
 		for _, tc := range msg.TCs {
@@ -62,6 +68,7 @@ func (a *Agent) saveDoc(summary string) error {
 		}
 	}
 
+	// combines all the info together
 	var doc strings.Builder
 	doc.WriteString(fmt.Sprintf("# Task Summary — %s\n\n", timestamp))
 	if a.taskStart < len(a.History) {
@@ -75,9 +82,11 @@ func (a *Agent) saveDoc(summary string) error {
 		}
 	}
 
-	return os.WriteFile(".agent/docs/commits/"+timestamp+".md", []byte(doc.String()), 0644)
+	// writes to the file
+	return os.WriteFile(".agent/docs/tasks/" + timestamp + ".md", []byte(doc.String()), 0644)
 }
 
+// reads from ARCHITECTURE.md
 func LoadArchitecture() string {
 	data, err := os.ReadFile(".agent/docs/ARCHITECTURE.md")
 	if err != nil {
@@ -86,8 +95,9 @@ func LoadArchitecture() string {
 	return string(data)
 }
 
+// gets the n most recent task docs
 func LoadRecentDocs(n int) string {
-	entries, err := os.ReadDir(".agent/docs/commits/")
+	entries, err := os.ReadDir(".agent/docs/tasks/")
 	if err != nil {
 		return ""
 	}
@@ -97,7 +107,7 @@ func LoadRecentDocs(n int) string {
 		start = 0
 	}
 	for _, entry := range entries[start:] {
-		data, err := os.ReadFile(".agent/docs/commits/" + entry.Name())
+		data, err := os.ReadFile(".agent/docs/tasks/" + entry.Name())
 		if err != nil {
 			continue
 		}
@@ -106,6 +116,7 @@ func LoadRecentDocs(n int) string {
 	return strings.Join(docs, "\n---\n\n")
 }
 
+// prompts the agent to update the architecture based on the task summary
 func (a *Agent) updateArchitecture(ctx context.Context, summary string) {
 	existing := LoadArchitecture()
 
@@ -135,6 +146,7 @@ Rules:
 - If no changes are needed, output: NO CHANGES
 - Do not output the full document. Only output the diff.
 `
+	// if we don't have a doc, this will create it and write to the file
 	if existing == "" {
 		prompt = `Create a brief architecture document with three sections: Current State, Key Decisions, and Roadmap (with subsections NEXT, DEFERRED, BLOCKED). Base it on this task summary. Keep each entry to one line. Do not wrap in code fences. Output raw markdown only.
 
@@ -157,6 +169,7 @@ Task summary:
 		return
 	}
 
+	// if there's already a doc, then we prompt the agent to compile the necessary changes
 	prompt += "\nCurrent ARCHITECTURE.md:\n" + existing + "\n\nTask summary:\n" + summary
 
 	ch, err := a.CurrentModel.Provider.Chat(ctx, []llm.Message{{Role: "user", Content: prompt}}, nil, *a.CurrentModel)
@@ -173,9 +186,11 @@ Task summary:
 	if response == "NO CHANGES" || response == "" {
 		return
 	}
+
 	applyArchitectureChanges(existing, response)
 }
 
+// given the existing doc and the changes, applies them and writes back to ARCHITECTURE.md
 func applyArchitectureChanges(existing string, changes string) {
 	doc := existing
 	lines := strings.Split(changes, "\n")

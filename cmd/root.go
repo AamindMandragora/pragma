@@ -12,30 +12,34 @@ import (
 	"github.com/AamindMandragora/pragma/internal/process"
 	"github.com/AamindMandragora/pragma/internal/tools"
 	"github.com/AamindMandragora/pragma/internal/tui"
-	"github.com/spf13/cobra"
+	"github.com/spf13/cobra" // the package that allows us to create pragma as a CLI tool, used because it's industry standard
 )
 
 const Version = "1.0.0"
 
 var (
-	configFile  string
-	showVersion bool
-	budget      float64
+	configFile  string  // path to a custom configuration file
+	showVersion bool    // true if the user wants to see the version
+	budget      float64 // initial budget pragma will work under
 )
 
+// defines pragma by the text command the user will type in, short and long help descriptions, and a function to run once called
 var rootCmd = &cobra.Command{
 	Use:   "pragma",
 	Short: "pragma is the CLI agentic code helper",
 	Long:  `pragma launches an interactive TUI by default, or runs specialized subcommands.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		// if the user wants to see the version, print it
 		if showVersion {
 			fmt.Printf("pragma version %s\n", Version)
 			return
 		}
+		// otherwise, launch the terminal UI
 		launchTUI()
 	},
 }
 
+// runs the specified function in pragma's rootCmd, prints error if any happened
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -43,13 +47,16 @@ func Execute() {
 	}
 }
 
+// all init functions in a project get run before the main function in main.go, this one adds the version, config, and budget flags to the cli tool
 func init() {
 	rootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "print version information")
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "path to custom configuration file")
 	rootCmd.PersistentFlags().Float64VarP(&budget, "budget", "b", 0, "max dollar budget for this session")
 }
 
+// performs the setup and starts the TUI
 func launchTUI() {
+	// if the user gave us a config file, we attempt to read it and copy it to .agent/config.toml
 	if configFile != "" {
 		os.MkdirAll(".agent", 0755)
 		data, err := os.ReadFile(configFile)
@@ -59,38 +66,49 @@ func launchTUI() {
 		}
 		os.WriteFile(".agent/config.toml", data, 0644)
 	}
+	// if there's no .agent/config.toml, we start the tui with nil agent to trigger onboarding
 	if _, err := os.Stat(".agent/config.toml"); os.IsNotExist(err) {
-		tui.Start(nil, nil)
+		tui.Start(nil)
+		// if onboarding still couldn't create the config.toml, return
 		if _, err := os.Stat(".agent/config.toml"); os.IsNotExist(err) {
 			return
 		}
 	}
+	// loads config from .agent/config.toml into a struct
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return
 	}
+	// connects to the database
 	err = db.Connect()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return
 	}
+	// makes sure the database structure is what we expect
 	err = db.Migrate()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return
 	}
+	// sets up the list holding every (model, minPercentBudgetSpent) pair
 	var tiers []llm.ModelTier
+	// loops through every entry in the config
 	for _, t := range cfg.Model.Tiers {
-		p := llm.MakeProvider(t.ProviderName, t.ApiKeyVarName)
+		// if there's no api key env var name specified, then throw an error
 		if t.ApiKeyVarName == "" {
 			fmt.Fprintf(os.Stderr, "API key not set for tier %s: export %s=<key>\n", t.Model, t.ApiKeyVarName)
 			return
 		}
+		// creates the provider object
+		p := llm.MakeProvider(t.ProviderName, t.ApiKeyVarName)
+		// if the model has a special maxTokens, use that, otherwise default to 4096
 		maxTokens := t.MaxTokens
 		if maxTokens == 0 {
 			maxTokens = 4096
 		}
+		// creates the model object and adds it to the list
 		model := &llm.Model{
 			Name:        t.Model,
 			MaxTokens:   maxTokens,
@@ -101,17 +119,22 @@ func launchTUI() {
 		tiers = append(tiers, llm.ModelTier{Model: model, Threshold: t.Threshold})
 	}
 
+	// initializes the process manager and the tools registry
 	manager := process.NewManager()
 	registry := tools.NewRegistry()
+	// registers all the tools we have
 	registry.Register(&tools.ReadFileTool{})
 	registry.Register(&tools.WriteFileTool{})
 	registry.Register(&tools.EditFileTool{})
-	registry.Register(&tools.RunCommandTool{Manager: manager, Timeout: 5 * time.Minute})
 	registry.Register(&tools.WebFetchTool{})
+	// passes the manager to the run command tool as well as a 5 min default timeout
+	registry.Register(&tools.RunCommandTool{Manager: manager, Timeout: 5 * time.Minute})
 	tools.LoadPlugins(registry, ".agent/tools", manager)
 
-	a := agent.NewAgent(tiers[0].Model, registry)
+	// creates an agent that holds the model tiers and the registry
+	a := agent.NewAgent(tiers, registry)
+	// sets the agent's budget
 	a.Budget = budget
-	a.ModelTiers = tiers
-	tui.Start(a, nil)
+	// starts the TUI with the agent
+	tui.Start(a)
 }

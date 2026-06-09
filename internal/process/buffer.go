@@ -9,6 +9,7 @@ import (
 	"sync"
 )
 
+// buffers hold a pointer to a temp file, the last tailMax lines in a string array, the number of total lines, a partially read string, and a mutex
 type OutputBuffer struct {
 	file    *os.File
 	tail    []string
@@ -18,6 +19,7 @@ type OutputBuffer struct {
 	m       sync.Mutex
 }
 
+// creates a temp file for a new output buffer
 func NewOutputBuffer(tailSize int) (*OutputBuffer, error) {
 	f, err := os.CreateTemp("", "pragma-output-*")
 	if err != nil {
@@ -26,16 +28,20 @@ func NewOutputBuffer(tailSize int) (*OutputBuffer, error) {
 	return &OutputBuffer{file: f, tail: make([]string, 0, tailSize), tailMax: tailSize,}, nil
 }
 
+// writes to the buffer, returns number of byte written
 func (o *OutputBuffer) Write(p []byte) (int, error) {
 	o.m.Lock()
 	defer o.m.Unlock()
+	// writes data to the file
 	if _, err := o.file.Write(p); err != nil {
 		return 0, err
 	}
+	// combines the partial write with the data we got, then splits it into lines and makes the last one the new partial
 	text := o.partial + string(p)
 	lines := strings.Split(text, "\n")
 	o.partial = lines[len(lines) - 1]
 	lines = lines[:len(lines) - 1]
+	// for all lines check if the tail is full and if so remove the first line, then append this line
 	for _, line := range lines {
 		o.lines++
 		if len(o.tail) >= o.tailMax {
@@ -48,6 +54,7 @@ func (o *OutputBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// deep copies the last n lines of the tail and returns it
 func (o *OutputBuffer) Tail(n int) []string {
 	o.m.Lock()
 	defer o.m.Unlock()
@@ -61,12 +68,14 @@ func (o *OutputBuffer) Tail(n int) []string {
 	return result
 }
 
+// number of lines getter
 func (o *OutputBuffer) Lines() int {
 	o.m.Lock()
 	defer o.m.Unlock()
 	return o.lines
 }
 
+// last line getter
 func (o *OutputBuffer) LastLine() string {
 	o.m.Lock()
 	defer o.m.Unlock()
@@ -76,6 +85,7 @@ func (o *OutputBuffer) LastLine() string {
 	return o.tail[len(o.tail) - 1]
 }
 
+// reads the whole file and returns the text
 func (o *OutputBuffer) String() string {
 	o.m.Lock()
 	defer o.m.Unlock()
@@ -87,6 +97,7 @@ func (o *OutputBuffer) String() string {
 	return string(data)
 }
 
+// find all lines that match a regex and return the array
 func (o *OutputBuffer) Filter(pattern string) []string {
 	o.m.Lock()
 	defer o.m.Unlock()
@@ -108,6 +119,7 @@ func (o *OutputBuffer) Filter(pattern string) []string {
 	return matches
 }
 
+// closes buffer by closing and deleting the file
 func (o *OutputBuffer) Close() {
 	o.m.Lock()
 	defer o.m.Unlock()

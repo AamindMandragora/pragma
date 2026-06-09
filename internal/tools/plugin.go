@@ -11,6 +11,7 @@ import (
 	"github.com/AamindMandragora/pragma/internal/process"
 )
 
+// all tool plugins must have a name, description, schema, command, and a boolean determining whether or not it requires confirmation
 type PluginManifest struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
@@ -19,11 +20,13 @@ type PluginManifest struct {
 	Confirm     bool            `json:"confirm"`
 }
 
+// plugin tools consist of the above manifest and the process manager
 type PluginTool struct {
 	Manifest PluginManifest
-	Manager *process.Manager
+	Manager  *process.Manager
 }
 
+// reads */tool.json files from the given path, creates the manifest by unmarshaling the data, then gives it the manager and registers it
 func LoadPlugins(registry *Registry, path string, manager *process.Manager) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
@@ -46,47 +49,54 @@ func LoadPlugins(registry *Registry, path string, manager *process.Manager) {
 	}
 }
 
-func (p* PluginTool) Name() string {
+func (p *PluginTool) Name() string {
 	return p.Manifest.Name
 }
 
-func (p* PluginTool) Description() string {
+func (p *PluginTool) Description() string {
 	return p.Manifest.Description
 }
 
-func (p* PluginTool) Schema() json.RawMessage {
+func (p *PluginTool) Schema() json.RawMessage {
 	return p.Manifest.Schema
 }
 
-func (p* PluginTool) Execute(args json.RawMessage) (string, error) {
+func (p *PluginTool) Execute(args json.RawMessage) (string, error) {
 	var params map[string]interface{}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
 	}
 	cmd := p.Manifest.Command
+	// replaces the key placeholders in the command with the values
 	for key, val := range params {
 		placeholder := "{{" + key + "}}"
 		cmd = strings.ReplaceAll(cmd, placeholder, fmt.Sprintf("%v", val))
 	}
-	proc, err := p.Manager.Start(cmd, 5 * time.Minute)
+	// runs the command through the process manager
+	proc, err := p.Manager.Start(cmd, 5*time.Minute)
 	if err != nil {
 		return "", err
 	}
+	// waits on the result
 	result := proc.Wait()
 	output := result.Stdout.String()
 	stderr := result.Stderr.String()
+	// adds stderr to the output
 	if stderr != "" {
 		output += "\nstderr:\n" + stderr
 	}
+	// adds exit code to the output
 	if result.ExitCode != 0 {
 		output += fmt.Sprintf("\nexit code: %d", result.ExitCode)
 	}
+	// closes buffers and returns
 	result.Stdout.Close()
 	result.Stderr.Close()
 	return output, nil
 }
 
-func (p* PluginTool) ConfirmSummary(args json.RawMessage) string {
+// plugin confirm summaries are just the key/value arg pairs
+func (p *PluginTool) ConfirmSummary(args json.RawMessage) string {
 	if !p.Manifest.Confirm {
 		return ""
 	}
@@ -94,7 +104,7 @@ func (p* PluginTool) ConfirmSummary(args json.RawMessage) string {
 	json.Unmarshal(args, &params)
 	cmd := p.Manifest.Command
 	for key, val := range params {
-		cmd = strings.ReplaceAll(cmd, "{{" + key + "}}", fmt.Sprintf("%v", val))
+		cmd = strings.ReplaceAll(cmd, "{{"+key+"}}", fmt.Sprintf("%v", val))
 	}
 	return cmd
 }

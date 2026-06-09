@@ -8,12 +8,13 @@ import (
 	"strings"
 
 	"github.com/AamindMandragora/pragma/internal/agent"
+	tea "github.com/charmbracelet/bubbletea" // bubbletea is what allows us to create our tui and it's industry standard
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
+// message styling for different roles
 var (
 	userStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
 	agentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)
@@ -22,26 +23,31 @@ var (
 	dimStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
 
+// messages will just have roles and contents
 type Message struct {
 	Role    string
 	Content string
 }
 
+// agent message holds the output of agent.Run
 type agentMessage struct {
 	res string
 	err error
 }
 
+// tool message holds the type (call/result/cost), the name of the tool (or cost), and the content
 type toolMessage struct {
 	eventType string
 	name      string
 	content   string
 }
 
+// confirm messages just hold the summary
 type confirmMessage struct {
 	command string
 }
 
+// either onboarding or chat
 type TUIState int
 
 const (
@@ -49,6 +55,7 @@ const (
 	StateChat
 )
 
+// TUIModel holds an agent, text input, viewport, messages, height and width, state, onboarding steps, data, tiers, whether its streaming or confirming
 type TUIModel struct {
 	agent        *agent.Agent
 	input        textinput.Model
@@ -66,10 +73,12 @@ type TUIModel struct {
 	onboardTiers []map[string]string
 }
 
+// when the model starts we have the textinput cursor blink
 func (t *TUIModel) Init() tea.Cmd {
 	return textinput.Blink
 }
 
+// gets the first arg in the json
 func firstArg(argsJSON string) string {
 	var m map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &m); err != nil {
@@ -85,6 +94,7 @@ func firstArg(argsJSON string) string {
 	return ""
 }
 
+// renders the messages in the viewport based on their roles, appends streaming or confirming text at the end
 func (t *TUIModel) updateViewportContent() {
 	var b strings.Builder
 	for _, msg := range t.messages {
@@ -147,6 +157,7 @@ func (t *TUIModel) updateViewportContent() {
 	t.viewport.GotoBottom()
 }
 
+// holds all the slash commands and executes them
 func (t *TUIModel) handleSlashCommand(cmd string) string {
 	parts := strings.Fields(cmd)
 	command := parts[0]
@@ -242,6 +253,7 @@ func (t *TUIModel) handleSlashCommand(cmd string) string {
 	}
 }
 
+// the TUIModel's update step during onboarding
 func (t *TUIModel) updateOnboarding(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -258,6 +270,7 @@ func (t *TUIModel) updateOnboarding(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.input.SetValue("")
 
 			switch t.onboardStep {
+			// selects a provider
 			case 0, 4:
 				switch val {
 				case "2":
@@ -276,18 +289,21 @@ func (t *TUIModel) updateOnboarding(msg tea.Msg) (tea.Model, tea.Cmd) {
 				t.onboardStep++
 				t.input.Placeholder = "Model name [" + t.onboardData["default_model"] + "]"
 
+			// selects a model
 			case 1, 5:
 				if val == "" {
 					val = t.onboardData["default_model"]
 				}
 				t.onboardData["model"] = val
 				t.onboardStep++
+				// if it's the first model, ask for the api key, otherwise the threshold fraction for when we fall back to it
 				if t.onboardStep == 2 {
 					t.input.Placeholder = "Paste API key (or enter to skip)"
 				} else {
 					t.input.Placeholder = "Fallback cost threshold fraction e.g. 0.5 [0.5]"
 				}
 
+			// sets the api key and 0.0 threshold for our first model, then add it to the tiers
 			case 2:
 				t.onboardData["api_key"] = val
 				t.onboardData["threshold"] = "0.0"
@@ -296,6 +312,7 @@ func (t *TUIModel) updateOnboarding(msg tea.Msg) (tea.Model, tea.Cmd) {
 				t.onboardStep = 3
 				t.input.Placeholder = "y/n [n]"
 
+			// if we want a fallback model, goes to step 4, otherwise finishes onboarding
 			case 3:
 				if strings.ToLower(val) == "y" || strings.ToLower(val) == "yes" {
 					t.onboardStep = 4
@@ -305,6 +322,7 @@ func (t *TUIModel) updateOnboarding(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return t, tea.Quit
 				}
 
+			// chooses the threshold fraction for the fallback model and asks for its api key
 			case 6:
 				if val == "" {
 					val = "0.5"
@@ -313,6 +331,7 @@ func (t *TUIModel) updateOnboarding(msg tea.Msg) (tea.Model, tea.Cmd) {
 				t.onboardStep = 7
 				t.input.Placeholder = "Paste fallback API key (or enter to skip)"
 
+			// gets the fallback model api key
 			case 7:
 				t.onboardData["api_key"] = val
 				t.onboardTiers = append(t.onboardTiers, t.onboardData)
@@ -327,6 +346,7 @@ func (t *TUIModel) updateOnboarding(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return t, cmd
 }
 
+// the TUIModel's update step during chat
 func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -340,6 +360,7 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		t.updateViewportContent()
 		return t, nil
 	case tea.KeyMsg:
+		// if we're confirming treat the message as a yes or no
 		if t.confirming {
 			switch msg.String() {
 			case "y", "Y":
@@ -368,6 +389,7 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if strings.ToLower(val) == "exit" || strings.ToLower(val) == "quit" {
 				return t, tea.Quit
 			}
+			// if it starts with a slash handle the command and update the messages accordingly
 			if strings.HasPrefix(val, "/") {
 				t.input.SetValue("")
 				result := t.handleSlashCommand(val)
@@ -380,6 +402,7 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return t, nil
 			}
+			// otherwise it's a message to agent, return the command that will run the agent
 			t.input.SetValue("")
 			t.messages = append(t.messages, Message{Role: "user", Content: val})
 			t.streaming = true
@@ -393,6 +416,7 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case agentMessage:
 		t.streaming = false
+		// sends an error message if one exists and an assistant message otherwise
 		if msg.err != nil {
 			t.messages = append(t.messages, Message{Role: "error", Content: msg.err.Error()})
 		} else {
@@ -401,6 +425,7 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		t.updateViewportContent()
 		return t, nil
 	case toolMessage:
+		// if it's a tool call display the name and first arg, if its a tool result show the text for that, if its a cost then just append normally
 		switch msg.eventType {
 		case "tool_call":
 			arg := firstArg(msg.content)
@@ -434,6 +459,7 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return t, tea.Batch(cmd, vpCmd)
 }
 
+// inserts newlines in the text based on width to wrap line
 func wrap(text string, width int) string {
 	if width <= 0 {
 		return text
@@ -464,6 +490,7 @@ func wrap(text string, width int) string {
 	return result.String()
 }
 
+// update wrapper function that delegates to onboarding or chat depending on state
 func (t *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch t.state {
 	case StateOnboarding:
@@ -474,6 +501,7 @@ func (t *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return t, nil
 }
 
+// the display during onboarding
 func (t *TUIModel) viewOnboarding() string {
 	var b strings.Builder
 	b.WriteString("\n")
@@ -548,6 +576,7 @@ func (t *TUIModel) viewOnboarding() string {
 	return b.String()
 }
 
+// writes the config created through onboarding to .agents/config.toml
 func (t *TUIModel) writeOnboardConfig() {
 	os.MkdirAll(".agent", 0755)
 
@@ -568,6 +597,7 @@ max_output_tokens = 4096
 
 	os.WriteFile(".agent/config.toml", []byte(config), 0644)
 
+	// writes all the api keys to a .env
 	f, err := os.OpenFile(".env", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err == nil {
 		defer f.Close()
@@ -580,6 +610,7 @@ max_output_tokens = 4096
 	}
 }
 
+// the display during chatting
 func (t *TUIModel) viewChat() string {
 	var b strings.Builder
 	b.WriteString(dimStyle.Render("  pragma v1.0.0 -- ctrl+c to quit"))
@@ -596,6 +627,7 @@ func (t *TUIModel) viewChat() string {
 	return b.String()
 }
 
+// wrapper function that delegates to onboarding or chat
 func (t *TUIModel) View() string {
 	switch t.state {
 	case StateOnboarding:
@@ -606,17 +638,22 @@ func (t *TUIModel) View() string {
 	return ""
 }
 
-func Start(a *agent.Agent, setProg func(*tea.Program)) {
+// starts the tui
+func Start(a *agent.Agent) {
+	// creates and focuses a text input, sets its width and max input chars
 	ti := textinput.New()
 	ti.Focus()
 	ti.Width = 80
 	ti.CharLimit = 4096
 
+	// creates a blank viewpoint
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
 
+	// channel that holds the confirm events
 	confirmChan := make(chan bool)
 
+	// if a nil model was passed in we're onboarding otherwise chatting
 	state := StateChat
 	if a == nil {
 		state = StateOnboarding
@@ -625,6 +662,7 @@ func Start(a *agent.Agent, setProg func(*tea.Program)) {
 		ti.Placeholder = "Ask pragma..."
 	}
 
+	// creates the tui model with all the params
 	m := TUIModel{
 		agent:        a,
 		input:        ti,
@@ -636,14 +674,17 @@ func Start(a *agent.Agent, setProg func(*tea.Program)) {
 		onboardTiers: []map[string]string{},
 	}
 
+	// runs the model as a bubbletea program
 	p := tea.NewProgram(&m, tea.WithAltScreen())
 
+	// if we have an agent and tools then we create the confirm function that just sends the message to the user asking yes or no
 	if a != nil && a.Registry != nil {
 		a.Registry.Confirm = func(toolName string, summary string) bool {
 			p.Send(confirmMessage{command: fmt.Sprintf("[%s] %s", toolName, summary)})
 			return <-confirmChan
 		}
 
+		// whenever the agent emits an event, if it's a tool call, send the tool message to the tui
 		a.OnEvent = func(event agent.AgentEvent) {
 			content := event.Content
 			if event.Type == "tool_call" {
@@ -653,9 +694,7 @@ func Start(a *agent.Agent, setProg func(*tea.Program)) {
 		}
 	}
 
-	if setProg != nil {
-		setProg(p)
-	}
+	// runs the bubbletea program and prints any error
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
