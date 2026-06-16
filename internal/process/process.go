@@ -8,27 +8,27 @@ import (
 	"github.com/google/uuid"
 )
 
-// processes will have an internal uuid, a pid, a name, a command, a start time, a status, an exit code, stdout and stderr buffers, a cleanup function, and a channel that only holds an eleemnt when the process is done
+// processes will have an internal uuid, a pid, a name, a command, a start time, a status, an exit code, stdout and stderr buffers, a cleanup function, and a channel that only holds an element when the process is done
 type Process struct {
-	Id string
-	Pid int
-	Name string
-	Command *exec.Cmd
-	Start time.Time
-	Status string
+	Id       string
+	Pid      int
+	Name     string
+	Command  *exec.Cmd
+	Start    time.Time
+	Status   string
 	ExitCode int
-	Stdout *OutputBuffer
-	Stderr *OutputBuffer
-	Cleanup context.CancelFunc
-	Done chan struct{}
+	Stdout   *OutputBuffer
+	Stderr   *OutputBuffer
+	Cleanup  context.CancelFunc
+	Done     chan struct{}
 }
 
 // the result of a process will be the status, exit code, and stdout/stderr buffers
 type ProcessResult struct {
-	Status string
+	Status   string
 	ExitCode int
-	Stdout *OutputBuffer
-	Stderr *OutputBuffer
+	Stdout   *OutputBuffer
+	Stderr   *OutputBuffer
 }
 
 // creates a new process by initializing buffers, then fills in fields
@@ -48,7 +48,7 @@ func NewProcess(command string) (*Process, error) {
 // blocks until we get the empty packet in the done channel, then returns a process result made from process fields
 func (p *Process) Wait() ProcessResult {
 	<-p.Done
-	return ProcessResult{Status: p.Status, ExitCode: p.ExitCode, Stdout: p.Stdout, Stderr: p.Stderr};
+	return ProcessResult{Status: p.Status, ExitCode: p.ExitCode, Stdout: p.Stdout, Stderr: p.Stderr}
 }
 
 // checks if there's something in the done channel, has stopped if true

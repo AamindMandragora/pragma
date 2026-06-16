@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-// buffers hold a pointer to a temp file, the last tailMax lines in a string array, the number of total lines, a partially read string, and a mutex
+// buffers hold a pointer to a temp file, the last tailMax lines in a string array, the number of total lines, a partially read string, a mutex, and a callback function that reacts to new lines
 type OutputBuffer struct {
 	file    *os.File
 	tail    []string
@@ -17,6 +17,7 @@ type OutputBuffer struct {
 	lines   int
 	partial string
 	m       sync.Mutex
+	OnLine  func(string)
 }
 
 // creates a temp file for a new output buffer
@@ -25,7 +26,7 @@ func NewOutputBuffer(tailSize int) (*OutputBuffer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &OutputBuffer{file: f, tail: make([]string, 0, tailSize), tailMax: tailSize,}, nil
+	return &OutputBuffer{file: f, tail: make([]string, 0, tailSize), tailMax: tailSize}, nil
 }
 
 // writes to the buffer, returns number of byte written
@@ -39,16 +40,20 @@ func (o *OutputBuffer) Write(p []byte) (int, error) {
 	// combines the partial write with the data we got, then splits it into lines and makes the last one the new partial
 	text := o.partial + string(p)
 	lines := strings.Split(text, "\n")
-	o.partial = lines[len(lines) - 1]
-	lines = lines[:len(lines) - 1]
+	o.partial = lines[len(lines)-1]
+	lines = lines[:len(lines)-1]
 	// for all lines check if the tail is full and if so remove the first line, then append this line
 	for _, line := range lines {
 		o.lines++
 		if len(o.tail) >= o.tailMax {
 			copy(o.tail, o.tail[1:])
-			o.tail[len(o.tail) - 1] = line
+			o.tail[len(o.tail)-1] = line
 		} else {
 			o.tail = append(o.tail, line)
+		}
+		// if we have a defined callback, run it
+		if o.OnLine != nil {
+			o.OnLine(line)
 		}
 	}
 	return len(p), nil
@@ -64,7 +69,7 @@ func (o *OutputBuffer) Tail(n int) []string {
 		return result
 	}
 	result := make([]string, n)
-	copy(result, o.tail[len(o.tail) - n:])
+	copy(result, o.tail[len(o.tail)-n:])
 	return result
 }
 
@@ -82,7 +87,7 @@ func (o *OutputBuffer) LastLine() string {
 	if len(o.tail) == 0 {
 		return ""
 	}
-	return o.tail[len(o.tail) - 1]
+	return o.tail[len(o.tail)-1]
 }
 
 // reads the whole file and returns the text

@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/AamindMandragora/pragma/internal/db"
 	"github.com/AamindMandragora/pragma/internal/llm"
+	"github.com/AamindMandragora/pragma/internal/process"
 	"github.com/AamindMandragora/pragma/internal/tools"
 	"github.com/google/uuid"
 )
@@ -35,11 +38,12 @@ type AgentEvent struct {
 	Content string
 }
 
-// agents hold a current model, the model tiers, tool registry, message history, OnEvent function, taskStart message pointer, input/output token counters, task/session cost, prev model name, a budget, and the session id
+// agents hold a current model, the model tiers, tool registry, process manager, message history, OnEvent function, taskStart message pointer, input/output token counters, task/session cost, prev model name, a budget, and the session id
 type Agent struct {
 	CurrentModel     *llm.Model
 	ModelTiers       []llm.ModelTier
 	Registry         *tools.Registry
+	Manager          *process.Manager
 	History          []llm.Message
 	OnEvent          func(AgentEvent)
 	taskStart        int
@@ -53,8 +57,8 @@ type Agent struct {
 }
 
 // creates an agent with current model equal to the first one in tiers, builds the system prompt and puts it in the history
-func NewAgent(tiers []llm.ModelTier, registry *tools.Registry) *Agent {
-	a := &Agent{CurrentModel: tiers[0].Model, Registry: registry, SessionID: uuid.New()}
+func NewAgent(tiers []llm.ModelTier, registry *tools.Registry, manager *process.Manager) *Agent {
+	a := &Agent{CurrentModel: tiers[0].Model, Registry: registry, Manager: manager, SessionID: uuid.New()}
 	a.ModelTiers = tiers
 	// gets the current working directory for the db session row
 	var cwd, _ = os.Getwd()
@@ -73,12 +77,12 @@ func NewAgent(tiers []llm.ModelTier, registry *tools.Registry) *Agent {
 }
 
 // does the same thing as new agent except tries to fetch stored messages from the db and updates the history accordingly
-func ResumeAgent(sessionID string, tiers []llm.ModelTier, registry *tools.Registry) *Agent {
+func ResumeAgent(sessionID string, tiers []llm.ModelTier, registry *tools.Registry, manager *process.Manager) *Agent {
 	parsedId, err := uuid.Parse(sessionID)
 	if err != nil {
 		logger.Printf("Invalid session ID %q: %v", sessionID, err)
 	}
-	a := &Agent{CurrentModel: tiers[0].Model, Registry: registry, SessionID: parsedId}
+	a := &Agent{CurrentModel: tiers[0].Model, Registry: registry, Manager: manager, SessionID: parsedId}
 	a.ModelTiers = tiers
 	prompt := a.buildSystemPrompt()
 	arch := LoadArchitecture()
@@ -129,6 +133,7 @@ You have tools available to inspect files, edit files, run commands, fetch web p
 - Use delete_file to remove files that are no longer needed.
 - Use run_command to execute shell commands, run tests, build the project, or inspect the working tree.
 - When running a non-trivial command, briefly explain what it does in one line.
+- If you need to run something too complex to do in the shell, write a short python script and use run_python to execute.
 - Use web_fetch to read web pages, documentation, API references, or any URL. The user may give you URLs to read, or you can fetch documentation pages you know about.
 - Use git_status to inspect the working tree, git_diff to review changes, git_log to inspect recent commits, git_branch to list/create/check out branches, git_stash to push or pop stash entries, and git_commit to stage and commit changes.
 - Never use run_command to communicate with the user. All communication goes in your response text.
@@ -259,6 +264,22 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 	a.TaskOutputTokens = 0
 	a.TaskCost = 0
 
+	// checks if we're inside a git repo
+	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+	inWorkTree, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	// if so, push a checkpoint onto the stash stack and re-apply to preserve working tree
+	if strings.TrimSpace(string(inWorkTree)) == "true" {
+		ctim := time.Now()
+		cmd = exec.Command("git", "stash", "push", "-u", "-m", fmt.Sprintf("pragma-checkpoint-%d", ctim.Unix()))
+		if err := cmd.Run(); err == nil {
+			cmd = exec.Command("git", "stash", "apply")
+			cmd.Run()
+		}
+	}
+
 	// if this is the first message, use it to create the session's title
 	if a.taskStart == 1 {
 		title := message
@@ -277,7 +298,7 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 	usedTools := false
 
 	// tries to save the message to the db
-	err := db.SaveMessage(a.SessionID, a.History[len(a.History)-1])
+	err = db.SaveMessage(a.SessionID, a.History[len(a.History)-1])
 	if err != nil {
 		logger.Printf("SaveMessage failed: %v", err)
 	}

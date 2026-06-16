@@ -9,10 +9,9 @@ import (
 	"github.com/AamindMandragora/pragma/internal/process"
 )
 
-// run command tools must have a process manager and default timeout
+// run command tools must have a process manager
 type RunCommandTool struct {
 	Manager *process.Manager
-	Timeout time.Duration
 }
 
 func (r *RunCommandTool) Name() string {
@@ -24,7 +23,7 @@ func (r *RunCommandTool) Description() string {
 }
 
 func (r *RunCommandTool) Schema() json.RawMessage {
-	return json.RawMessage(`{"type": "object", "properties": {"command": {"type": "string", "description": "Command to be run"}}, "required": ["command"]}`)
+	return json.RawMessage(`{"type": "object", "properties": {"command": {"type": "string", "description": "Command to be run"}, "timeout": {"type": "integer", "description": "Timeout in seconds before terminating the process, no timeout by default"}}, "required": ["command"]}`)
 }
 
 func (r *RunCommandTool) ConfirmSummary(args json.RawMessage) string {
@@ -38,12 +37,13 @@ func (r *RunCommandTool) ConfirmSummary(args json.RawMessage) string {
 func (r *RunCommandTool) Execute(args json.RawMessage) (string, error) {
 	var params struct {
 		Command string `json:"command"`
+		Timeout int    `json:"timeout,omitempty"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
 	}
 	// runs the command through the process manager
-	proc, err := r.Manager.Start(params.Command, r.Timeout)
+	proc, err := r.Manager.Start(params.Command, time.Duration(params.Timeout)*time.Second, "SHELL")
 	if err != nil {
 		return "", err
 	}
@@ -72,7 +72,7 @@ func (r *RunCommandTool) Execute(args json.RawMessage) (string, error) {
 	}
 
 	if result.Status == "timeout" {
-		output += fmt.Sprintf("\n\nProcess timed out after %s", r.Timeout)
+		output += fmt.Sprintf("\n\nProcess timed out after %d seconds", params.Timeout)
 	}
 
 	if result.ExitCode != 0 {

@@ -8,7 +8,11 @@ import (
 )
 
 func shellCommand(command string) *exec.Cmd {
-	return exec.Command("sh", "-c", command)
+	return exec.Command("sh", "-c", "stdbuf -oL -eL "+command)
+}
+
+func pythonCommand(path string) *exec.Cmd {
+	return exec.Command("python", "-u", path)
 }
 
 func killTree(cmd *exec.Cmd) {

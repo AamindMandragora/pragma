@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/AamindMandragora/pragma/internal/agent"
 	"github.com/AamindMandragora/pragma/internal/config"
@@ -149,19 +148,20 @@ func launchTUI() {
 		registry.Register(tool)
 	}
 	registry.Register(&tools.WebFetchTool{})
-	// passes the manager to the run command tool as well as a 5 min default timeout
-	registry.Register(&tools.RunCommandTool{Manager: manager, Timeout: 5 * time.Minute})
+	// passes the manager to the run command tools
+	registry.Register(&tools.RunCommandTool{Manager: manager})
+	registry.Register(&tools.RunPythonTool{Manager: manager})
 	for _, tool := range gittools.RegisterAll() {
 		registry.Register(tool)
 	}
 	tools.LoadPlugins(registry, ".agent/tools", manager)
 
-	// creates an agent that holds the model tiers and the registry (resumes an old session if one was given)
+	// creates an agent that holds the model tiers, the registry, and the process manager (resumes an old session if one was given)
 	var a *agent.Agent
 	if oldSession == "" {
-		a = agent.NewAgent(tiers, registry)
+		a = agent.NewAgent(tiers, registry, manager)
 	} else {
-		a = agent.ResumeAgent(oldSession, tiers, registry)
+		a = agent.ResumeAgent(oldSession, tiers, registry, manager)
 	}
 	// sets the agent's budget
 	a.Budget = budget

@@ -73,7 +73,7 @@ func (p *PluginTool) Execute(args json.RawMessage) (string, error) {
 		cmd = strings.ReplaceAll(cmd, placeholder, fmt.Sprintf("%v", val))
 	}
 	// runs the command through the process manager
-	proc, err := p.Manager.Start(cmd, 5*time.Minute)
+	proc, err := p.Manager.Start(cmd, 5 * time.Minute, "SHELL")
 	if err != nil {
 		return "", err
 	}

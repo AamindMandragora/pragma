@@ -3,14 +3,16 @@ package process
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"sync"
 	"time"
 )
 
-// process manager will hold a list of processes and a mutex
+// process manager will hold a list of processes, a mutex, and a callback function for output lines
 type Manager struct {
 	Processes map[string]*Process
 	M         sync.Mutex
+	OnOutput  func(string)
 }
 
 // creates a new manager
@@ -19,13 +21,19 @@ func NewManager() *Manager {
 }
 
 // creates a new process to run the given command, returns a pointer to it
-func (m *Manager) Start(command string, timeout time.Duration) (*Process, error) {
+func (m *Manager) Start(command string, timeout time.Duration, lang string) (*Process, error) {
 	// creates the new process
 	p, err := NewProcess(command)
 	if err != nil {
 		return nil, err
 	}
-
+	// forwards the buffer callbacks to the process callback
+	p.Stdout.OnLine = func(line string) {
+		if m.OnOutput != nil {
+			m.OnOutput(line)
+		}
+	}
+	p.Stderr.OnLine = p.Stdout.OnLine
 	// creates a cancel function based on how long the timeout is
 	var ctx context.Context
 	var cancel context.CancelFunc
@@ -37,12 +45,20 @@ func (m *Manager) Start(command string, timeout time.Duration) (*Process, error)
 
 	// makes the cancel function the process cleanup function
 	p.Cleanup = cancel
-	// depending on OS creates the command
-	cmd := shellCommand(command)
+	// depending on OS and lang creates the command
+	var cmd *exec.Cmd
+	switch lang {
+	case "SHELL":
+		cmd = shellCommand(command)
+	case "PYTHON":
+		cmd = pythonCommand(command)
+	}
 	cmd.Stdout = p.Stdout
 	cmd.Stderr = p.Stderr
-	// depending on OS set the system process attributes
-	setSysProcAttr(cmd)
+	// depending on OS set the system process attributes for shell commands
+	if lang == "SHELL" {
+		setSysProcAttr(cmd)
+	}
 
 	// starts the command, cleans up if fails
 	if err := cmd.Start(); err != nil {

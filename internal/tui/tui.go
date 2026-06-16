@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/AamindMandragora/pragma/internal/agent"
 	"github.com/AamindMandragora/pragma/internal/db"
@@ -142,6 +145,9 @@ func (t *TUIModel) updateViewportContent() {
 				b.WriteString("\n")
 			}
 			b.WriteString("\n")
+		case "process_output":
+			b.WriteString(dimStyle.Render(fmt.Sprintf("  ⏳ [running] %s", msg.Content)))
+			b.WriteString("\n")
 		}
 	}
 	if t.streaming {
@@ -177,6 +183,7 @@ func (t *TUIModel) handleHashCommand(cmd string) string {
   #docs            — show recent task summaries
   #arch            — show architecture doc
   #sessions        — see list of recent session info
+  #undo            — revert to the last checkpoint
   #quit            — exit Pragma`
 	case "#clear":
 		t.messages = t.messages[:0]
@@ -253,7 +260,7 @@ func (t *TUIModel) handleHashCommand(cmd string) string {
 		if err != nil {
 			return "Error fetching sessions."
 		} else if sessions == nil {
-			return "No previous sessions"
+			return "No previous sessions."
 		} else {
 			var out strings.Builder
 			out.WriteString("sessions:\n")
@@ -262,6 +269,37 @@ func (t *TUIModel) handleHashCommand(cmd string) string {
 			}
 			return out.String()
 		}
+	case "#undo":
+		cmd := exec.Command("git", "stash", "list")
+		data, err := cmd.Output()
+		if err != nil {
+			return "Error fetching checkpoints."
+		}
+		stashed := strings.Split(string(data), "\n")
+		re := regexp.MustCompile(`^stash@{(?P<number>\d+)}: .*pragma-checkpoint-(?P<timestamp>\d+)$`)
+		for _, stash := range stashed {
+			matches := re.FindStringSubmatch(stash)
+			if len(matches) > 0 {
+				idx := matches[re.SubexpIndex("number")]
+				ref := fmt.Sprintf("stash@{%s}", idx)
+				cmd = exec.Command("git", "checkout", ".")
+				if err := cmd.Run(); err != nil {
+					return "Failed to discard current changes."
+				}
+				cmd = exec.Command("git", "clean", "-fd")
+				if err := cmd.Run(); err != nil {
+					return "Failed to clean untracked files."
+				}
+				cmd = exec.Command("git", "stash", "apply", ref)
+				if err := cmd.Run(); err != nil {
+					return "Failed to restore checkpoint."
+				}
+				cmd = exec.Command("git", "stash", "drop", ref)
+				cmd.Run()
+				return "Checkpoint restored."
+			}
+		}
+		return "No previous checkpoints."
 	case "#quit":
 		return "EXIT"
 	default:
@@ -441,7 +479,7 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		t.updateViewportContent()
 		return t, nil
 	case toolMessage:
-		// if it's a tool call display the name and first arg, if its a tool result show the text for that, if its a cost then just append normally
+		// if it's a tool call display the name and first arg, if its a tool result show the text for that, if its a cost then just append normally, if its a process output then either overwrite the last one or append it as a new line
 		switch msg.eventType {
 		case "tool_call":
 			arg := firstArg(msg.content)
@@ -452,6 +490,10 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.messages = append(t.messages, Message{Role: "tool_call", Content: display})
 			t.updateViewportContent()
 		case "tool_result":
+			// remove the live output indicator if present
+			if len(t.messages) > 0 && t.messages[len(t.messages)-1].Role == "process_output" {
+				t.messages = t.messages[:len(t.messages)-1]
+			}
 			content := msg.content
 			if len(content) > 500 {
 				content = content[:500] + "\n... (truncated)"
@@ -460,6 +502,13 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.updateViewportContent()
 		case "cost":
 			t.messages = append(t.messages, Message{Role: "system", Content: msg.content})
+			t.updateViewportContent()
+		case "process_output":
+			if len(t.messages) > 0 && t.messages[len(t.messages)-1].Role == "process_output" {
+				t.messages[len(t.messages)-1].Content = msg.content
+			} else {
+				t.messages = append(t.messages, Message{Role: "process_output", Content: msg.content})
+			}
 			t.updateViewportContent()
 		}
 	case confirmMessage:
@@ -717,7 +766,6 @@ func Start(a *agent.Agent) {
 			p.Send(confirmMessage{command: fmt.Sprintf("[%s] %s", toolName, summary)})
 			return <-confirmChan
 		}
-
 		// whenever the agent emits an event, if it's a tool call, send the tool message to the tui
 		a.OnEvent = func(event agent.AgentEvent) {
 			content := event.Content
@@ -725,6 +773,19 @@ func Start(a *agent.Agent) {
 				content = event.Args
 			}
 			p.Send(toolMessage{eventType: event.Type, name: event.Name, content: content})
+		}
+		// whenever the process manager receives a new line, send it to the tui
+		var lastSend time.Time
+		a.Manager.OnOutput = func(line string) {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				return
+			}
+			now := time.Now()
+			if now.Sub(lastSend) > 100*time.Millisecond {
+				lastSend = now
+				p.Send(toolMessage{eventType: "process_output", content: trimmed})
+			}
 		}
 	}
 
