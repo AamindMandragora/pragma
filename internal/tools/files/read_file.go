@@ -1,4 +1,4 @@
-package tools
+package files
 
 import (
 	"encoding/json"
@@ -7,19 +7,19 @@ import (
 
 type ReadFileTool struct{}
 
-func (r* ReadFileTool) Name() string {
+func (r *ReadFileTool) Name() string {
 	return "read_file"
 }
 
-func (r* ReadFileTool) Description() string {
+func (r *ReadFileTool) Description() string {
 	return "Reads from a file given the path"
 }
 
-func (r* ReadFileTool) Schema() json.RawMessage {
+func (r *ReadFileTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type": "object", "properties": {"path": {"type": "string", "description": "Path to the file"}}, "required": ["path"]}`)
 }
 
-func (r* ReadFileTool) Execute(args json.RawMessage) (string, error) {
+func (r *ReadFileTool) Execute(args json.RawMessage) (string, error) {
 	var params struct {
 		Path string `json:"path"`
 	}

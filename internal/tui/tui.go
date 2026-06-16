@@ -8,9 +8,10 @@ import (
 	"strings"
 
 	"github.com/AamindMandragora/pragma/internal/agent"
-	tea "github.com/charmbracelet/bubbletea" // bubbletea is what allows us to create our tui and it's industry standard
+	"github.com/AamindMandragora/pragma/internal/db"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea" // bubbletea is what allows us to create our tui and it's industry standard
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -157,47 +158,48 @@ func (t *TUIModel) updateViewportContent() {
 	t.viewport.GotoBottom()
 }
 
-// holds all the slash commands and executes them
-func (t *TUIModel) handleSlashCommand(cmd string) string {
+// holds all the hash commands and executes them
+func (t *TUIModel) handleHashCommand(cmd string) string {
 	parts := strings.Fields(cmd)
 	command := parts[0]
 
 	switch command {
-	case "/help":
+	case "#help":
 		return `Available commands:
-  /help           — show this message
-  /clear          — clear chat history
-  /status         — show session info
-  /model          — show current model and tool mode
-  /switch <model> — switch to a different model
-  /budget [amount] — show or set dollar budget
-  /tiers          — show configured model tiers
-  /cost           — show token usage and cost
-  /docs           — show recent task summaries
-  /arch           — show architecture doc
-  /quit           — exit Pragma`
-	case "/clear":
+  #help            — show this message
+  #clear           — clear chat history
+  #status          — show session info
+  #model           — show current model and tool mode
+  #switch <model>  — switch to a different model
+  #budget [amount] — show or set dollar budget
+  #tiers           — show configured model tiers
+  #cost            — show token usage and cost
+  #docs            — show recent task summaries
+  #arch            — show architecture doc
+  #sessions        — see list of recent session info
+  #quit            — exit Pragma`
+	case "#clear":
 		t.messages = t.messages[:0]
 		if len(t.agent.History) > 0 {
 			t.agent.History = t.agent.History[:1]
 		}
 		return "Chat cleared."
-	case "/status":
+	case "#status":
 		msgCount := len(t.agent.History) - 1
 		return fmt.Sprintf("Messages: %d | Model: %s | Tool mode: %s", msgCount, t.agent.CurrentModel.Name, t.agent.CurrentModel.ToolMode)
-	case "/docs":
+	case "#docs":
 		recent := agent.LoadRecentDocs(3)
 		if recent == "" {
 			return "No task docs yet."
 		}
 		return recent
-	case "/arch":
+	case "#arch":
 		arch := agent.LoadArchitecture()
 		if arch == "" {
 			return "No architecture doc yet."
 		}
 		return arch
-	case "/cost":
+	case "#cost":
 		if t.agent == nil {
 			return "No agent running."
 		}
@@ -207,12 +209,12 @@ func (t *TUIModel) handleSlashCommand(cmd string) string {
 			msg += fmt.Sprintf("\nBudget: $%.2f (%.1f%% used)", t.agent.Budget, pct)
 		}
 		return msg
-	case "/model":
+	case "#model":
 		m := t.agent.CurrentModel
 		return fmt.Sprintf("Model: %s\n  Max tokens: %d\n  Tool mode: %s\n  Provider: %s", m.Name, m.MaxTokens, m.ToolMode, m.Provider.GetName())
-	case "/switch":
+	case "#switch":
 		if len(parts) < 2 {
-			return "Usage: /switch <model_name>"
+			return "Usage: #switch <model_name>"
 		}
 		for _, tier := range t.agent.ModelTiers {
 			if strings.Contains(tier.Model.Name, parts[1]) {
@@ -220,8 +222,8 @@ func (t *TUIModel) handleSlashCommand(cmd string) string {
 				return fmt.Sprintf("Switched to %s (%s)", tier.Model.Name, tier.Model.ToolMode)
 			}
 		}
-		return fmt.Sprintf("No tier matching '%s'. Type /tiers to see available.", parts[1])
-	case "/tiers":
+		return fmt.Sprintf("No tier matching '%s'. Type #tiers to see available.", parts[1])
+	case "#tiers":
 		var out strings.Builder
 		for _, tier := range t.agent.ModelTiers {
 			marker := "  "
@@ -231,13 +233,13 @@ func (t *TUIModel) handleSlashCommand(cmd string) string {
 			out.WriteString(fmt.Sprintf("%s%s (%s) at %.0f%%\n", marker, tier.Model.Name, tier.Model.ToolMode, tier.Threshold*100))
 		}
 		return out.String()
-	case "/budget":
+	case "#budget":
 		if len(parts) < 2 {
 			if t.agent.Budget > 0 {
 				pct := (t.agent.SessionCost / t.agent.Budget) * 100
 				return fmt.Sprintf("Budget: $%.2f (%.1f%% used)", t.agent.Budget, pct)
 			}
-			return "No budget set. Usage: /budget <amount>"
+			return "No budget set. Usage: #budget <amount>"
 		}
 		var amount float64
 		fmt.Sscanf(parts[1], "%f", &amount)
@@ -246,10 +248,24 @@ func (t *TUIModel) handleSlashCommand(cmd string) string {
 		}
 		t.agent.Budget = amount
 		return fmt.Sprintf("Budget set to $%.2f", amount)
-	case "/quit":
+	case "#sessions":
+		var sessions, err = db.ListSessions(10)
+		if err != nil {
+			return "Error fetching sessions."
+		} else if sessions == nil {
+			return "No previous sessions"
+		} else {
+			var out strings.Builder
+			out.WriteString("sessions:\n")
+			for _, session := range sessions {
+				out.WriteString(fmt.Sprintf("\t- %s\t%s\n", session.Id.String(), session.Title))
+			}
+			return out.String()
+		}
+	case "#quit":
 		return "EXIT"
 	default:
-		return fmt.Sprintf("Unknown command: %s. Type /help for available commands.", command)
+		return fmt.Sprintf("Unknown command: %s. Type #help for available commands.", command)
 	}
 }
 
@@ -389,10 +405,10 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if strings.ToLower(val) == "exit" || strings.ToLower(val) == "quit" {
 				return t, tea.Quit
 			}
-			// if it starts with a slash handle the command and update the messages accordingly
-			if strings.HasPrefix(val, "/") {
+			// if it starts with a hash handle the command and update the messages accordingly
+			if strings.HasPrefix(val, "#") {
 				t.input.SetValue("")
-				result := t.handleSlashCommand(val)
+				result := t.handleHashCommand(val)
 				if result == "EXIT" {
 					return t, tea.Quit
 				}
@@ -672,6 +688,24 @@ func Start(a *agent.Agent) {
 		state:        state,
 		onboardData:  make(map[string]string),
 		onboardTiers: []map[string]string{},
+	}
+
+	// renders messages already in the history from a resumed session
+	if a != nil && len(a.History) > 1 {
+		for _, msg := range a.History[1:] {
+			switch msg.Role {
+			case "user":
+				m.messages = append(m.messages, Message{Role: "user", Content: msg.Content})
+			case "assistant":
+				m.messages = append(m.messages, Message{Role: "assistant", Content: msg.Content})
+			case "tool":
+				content := msg.Content
+				if len(content) > 500 {
+					content = content[:500] + "\n... (truncated)"
+				}
+				m.messages = append(m.messages, Message{Role: "tool_result", Content: content})
+			}
+		}
 	}
 
 	// runs the model as a bubbletea program

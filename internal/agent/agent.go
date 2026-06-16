@@ -5,11 +5,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"strings"
 
+	"github.com/AamindMandragora/pragma/internal/db"
 	"github.com/AamindMandragora/pragma/internal/llm"
 	"github.com/AamindMandragora/pragma/internal/tools"
+	"github.com/google/uuid"
 )
+
+var logger *log.Logger
+
+// starts up a logger that writes to .agent/pragma.log if it can be opened or stderr otherwise
+func init() {
+	os.MkdirAll(".agent", 0755)
+	f, err := os.OpenFile(".agent/pragma.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		logger = log.New(os.Stderr, "pragma: ", log.LstdFlags)
+	} else {
+		logger = log.New(f, "", log.LstdFlags|log.Lshortfile)
+	}
+}
 
 type AgentEvent struct {
 	Type    string
@@ -18,7 +35,7 @@ type AgentEvent struct {
 	Content string
 }
 
-// agents hold a current model, the model tiers, tool registry, message history, OnEvent function, taskStart message pointer, input/output token counters, task/session cost, prev model name, and a budget
+// agents hold a current model, the model tiers, tool registry, message history, OnEvent function, taskStart message pointer, input/output token counters, task/session cost, prev model name, a budget, and the session id
 type Agent struct {
 	CurrentModel     *llm.Model
 	ModelTiers       []llm.ModelTier
@@ -32,11 +49,36 @@ type Agent struct {
 	SessionCost      float64
 	LastModelUsed    string
 	Budget           float64
+	SessionID        uuid.UUID
 }
 
 // creates an agent with current model equal to the first one in tiers, builds the system prompt and puts it in the history
 func NewAgent(tiers []llm.ModelTier, registry *tools.Registry) *Agent {
-	a := &Agent{CurrentModel: tiers[0].Model, Registry: registry}
+	a := &Agent{CurrentModel: tiers[0].Model, Registry: registry, SessionID: uuid.New()}
+	a.ModelTiers = tiers
+	// gets the current working directory for the db session row
+	var cwd, _ = os.Getwd()
+	db.CreateSession(a.SessionID, "", cwd)
+	prompt := a.buildSystemPrompt()
+	arch := LoadArchitecture()
+	if arch != "" {
+		prompt += "\n# Project Context\n\n" + arch + "\n"
+	}
+	recent := LoadRecentDocs(5)
+	if recent != "" {
+		prompt += "\n# Recent Changes\n\n" + recent + "\n"
+	}
+	a.History = []llm.Message{{Role: "system", Content: prompt}}
+	return a
+}
+
+// does the same thing as new agent except tries to fetch stored messages from the db and updates the history accordingly
+func ResumeAgent(sessionID string, tiers []llm.ModelTier, registry *tools.Registry) *Agent {
+	parsedId, err := uuid.Parse(sessionID)
+	if err != nil {
+		logger.Printf("Invalid session ID %q: %v", sessionID, err)
+	}
+	a := &Agent{CurrentModel: tiers[0].Model, Registry: registry, SessionID: parsedId}
 	a.ModelTiers = tiers
 	prompt := a.buildSystemPrompt()
 	arch := LoadArchitecture()
@@ -48,6 +90,11 @@ func NewAgent(tiers []llm.ModelTier, registry *tools.Registry) *Agent {
 		prompt += "\n# Recent Changes\n\n" + recent + "\n"
 	}
 	a.History = []llm.Message{{Role: "system", Content: prompt}}
+	history, err := db.LoadSessionMessages(parsedId)
+	if err != nil {
+		logger.Printf("Error when querying db: %v", err)
+	}
+	a.History = append(a.History, history...)
 	return a
 }
 
@@ -72,16 +119,18 @@ Prioritize technical accuracy over validating the user's assumptions. If the use
 
 # Tool usage
 
-You have tools available to read files, write files, and run commands. Use them to accomplish tasks — do not ask the user to run commands for you.
+You have tools available to inspect files, edit files, run commands, fetch web pages, and work with git. Use them to accomplish tasks — do not ask the user to run commands for you.
 
-- Use read_file to inspect code before editing it.
-- Use write_file to create or overwrite files.
-- When using write_file to create a markdown file, do not write it in the form of a code block. ALWAYS output raw markdown directly. You may still have code blocks within the raw markdown for different languages.
+- Use read_file to inspect code, configs, prompts, and other repository files before editing them.
+- Use write_file to create new files or overwrite files that do not already exist.
 - Use edit_file to make targeted changes to existing files. Provide the exact text to replace and the new text.
 - NEVER use write_file to modify an existing file. Always use edit_file. If edit_file fails because of a text mismatch, use read_file to see the exact content, then retry edit_file with the correct text.
-- Use run_command to execute shell commands, run tests, or build the project.
+- Use move_file to rename or relocate files when the contents should stay the same.
+- Use delete_file to remove files that are no longer needed.
+- Use run_command to execute shell commands, run tests, build the project, or inspect the working tree.
 - When running a non-trivial command, briefly explain what it does in one line.
-- Use web_fetch to read web pages, documentation, API references, or any URL. the user may give you URLs to read, or you can fetch documentation pages you know about.
+- Use web_fetch to read web pages, documentation, API references, or any URL. The user may give you URLs to read, or you can fetch documentation pages you know about.
+- Use git_status to inspect the working tree, git_diff to review changes, git_log to inspect recent commits, git_branch to list/create/check out branches, git_stash to push or pop stash entries, and git_commit to stage and commit changes.
 - Never use run_command to communicate with the user. All communication goes in your response text.
 - If you need to run multiple independent commands, call them all rather than waiting between them.
 - If you need to reason about a tool's output before deciding what to do next, make only ONE tool call. You will see the result and can then decide your next action. Only make multiple tool calls in one response if they are independent of each other.
@@ -210,10 +259,28 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 	a.TaskOutputTokens = 0
 	a.TaskCost = 0
 
+	// if this is the first message, use it to create the session's title
+	if a.taskStart == 1 {
+		title := message
+		if len(title) > 50 {
+			title = title[:50]
+		}
+		err := db.UpdateSessionTitle(a.SessionID, title)
+		if err != nil {
+			return "", err
+		}
+	}
+
 	// adds user message to history, haven't used a tool yet
 	a.History = append(a.History, llm.Message{Role: "user", Content: message})
 	callIndex := 0
 	usedTools := false
+
+	// tries to save the message to the db
+	err := db.SaveMessage(a.SessionID, a.History[len(a.History)-1])
+	if err != nil {
+		logger.Printf("SaveMessage failed: %v", err)
+	}
 
 	for range 20 {
 		// guard against going over budget
@@ -307,6 +374,11 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 		// add all the tool calls to the message history once we're done calling
 		if len(toolCalls) == 0 {
 			a.History = append(a.History, llm.Message{Role: "assistant", Content: cleanText})
+			// tries to save the message to the db
+			err := db.SaveMessage(a.SessionID, a.History[len(a.History)-1])
+			if err != nil {
+				logger.Printf("SaveMessage failed: %v", err)
+			}
 			// if we have ever used tools then we need to generate a task doc and update the architecture
 			if usedTools {
 				if summary, err := a.generateDoc(ctx); err == nil {
@@ -330,6 +402,11 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 		// loop through all the tools that were called and dispatch them through the registry, then send an event containing the result
 		usedTools = true
 		a.History = append(a.History, llm.Message{Role: "assistant", Content: text.String(), TCs: toolCalls})
+		// tries to save the message to the db
+		err = db.SaveMessage(a.SessionID, a.History[len(a.History)-1])
+		if err != nil {
+			logger.Printf("SaveMessage failed: %v", err)
+		}
 		for _, tc := range toolCalls {
 			a.emit(AgentEvent{Type: "tool_call", Name: tc.Name, Args: string(tc.Args)})
 			res, err := a.Registry.Dispatch(tc.Name, tc.Args)
@@ -341,6 +418,11 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 				a.History = append(a.History, llm.Message{Role: "tool", Content: res, TCID: tc.Id})
 			} else {
 				a.History = append(a.History, llm.Message{Role: "tool", Content: fmt.Sprintf("Tool result for %s:\n%s", tc.Name, res), TCID: tc.Id})
+			}
+			// tries to save the message to the db
+			err = db.SaveMessage(a.SessionID, a.History[len(a.History)-1])
+			if err != nil {
+				logger.Printf("SaveMessage failed: %v", err)
 			}
 
 			// if we run out of budget after calling a tool then stop running them

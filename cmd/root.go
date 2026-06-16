@@ -11,6 +11,8 @@ import (
 	"github.com/AamindMandragora/pragma/internal/llm"
 	"github.com/AamindMandragora/pragma/internal/process"
 	"github.com/AamindMandragora/pragma/internal/tools"
+	filetools "github.com/AamindMandragora/pragma/internal/tools/files"
+	gittools "github.com/AamindMandragora/pragma/internal/tools/git"
 	"github.com/AamindMandragora/pragma/internal/tui"
 	"github.com/spf13/cobra" // the package that allows us to create pragma as a CLI tool, used because it's industry standard
 )
@@ -18,9 +20,11 @@ import (
 const Version = "1.0.0"
 
 var (
-	configFile  string  // path to a custom configuration file
-	showVersion bool    // true if the user wants to see the version
-	budget      float64 // initial budget pragma will work under
+	configFile   string  // path to a custom configuration file
+	showVersion  bool    // true if the user wants to see the version
+	budget       float64 // initial budget pragma will work under
+	oldSession   string  // uuid of a session to be resumed
+	listSessions bool    // true if the user wants to list the past sessions
 )
 
 // defines pragma by the text command the user will type in, short and long help descriptions, and a function to run once called
@@ -52,6 +56,8 @@ func init() {
 	rootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "print version information")
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "path to custom configuration file")
 	rootCmd.PersistentFlags().Float64VarP(&budget, "budget", "b", 0, "max dollar budget for this session")
+	rootCmd.PersistentFlags().StringVarP(&oldSession, "resume", "r", "", "start an old session from where you left off given the uuid")
+	rootCmd.Flags().BoolVarP(&listSessions, "sessions", "s", false, "shows a list of recent session information, max 10 entries")
 }
 
 // performs the setup and starts the TUI
@@ -92,6 +98,22 @@ func launchTUI() {
 		fmt.Fprintln(os.Stderr, err)
 		return
 	}
+
+	// if the user wants to see the sessions print them out now that we've connected to the db
+	if listSessions {
+		sessions, err := db.ListSessions(10)
+		if err != nil {
+			fmt.Print("couldn't fetch sessions\n")
+		} else if sessions == nil {
+			fmt.Print("no previous sessions\n")
+		} else {
+			fmt.Print("sessions:\n")
+			for _, session := range sessions {
+				fmt.Printf("\t- %s\t%s\n", session.Id.String(), session.Title)
+			}
+		}
+		return
+	}
 	// sets up the list holding every (model, minPercentBudgetSpent) pair
 	var tiers []llm.ModelTier
 	// loops through every entry in the config
@@ -123,16 +145,24 @@ func launchTUI() {
 	manager := process.NewManager()
 	registry := tools.NewRegistry()
 	// registers all the tools we have
-	registry.Register(&tools.ReadFileTool{})
-	registry.Register(&tools.WriteFileTool{})
-	registry.Register(&tools.EditFileTool{})
+	for _, tool := range filetools.RegisterAll() {
+		registry.Register(tool)
+	}
 	registry.Register(&tools.WebFetchTool{})
 	// passes the manager to the run command tool as well as a 5 min default timeout
 	registry.Register(&tools.RunCommandTool{Manager: manager, Timeout: 5 * time.Minute})
+	for _, tool := range gittools.RegisterAll() {
+		registry.Register(tool)
+	}
 	tools.LoadPlugins(registry, ".agent/tools", manager)
 
-	// creates an agent that holds the model tiers and the registry
-	a := agent.NewAgent(tiers, registry)
+	// creates an agent that holds the model tiers and the registry (resumes an old session if one was given)
+	var a *agent.Agent
+	if oldSession == "" {
+		a = agent.NewAgent(tiers, registry)
+	} else {
+		a = agent.ResumeAgent(oldSession, tiers, registry)
+	}
 	// sets the agent's budget
 	a.Budget = budget
 	// starts the TUI with the agent

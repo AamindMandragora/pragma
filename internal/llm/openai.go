@@ -72,7 +72,7 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 		return nil, err
 	}
 	// gives the request a header holding the auth key and the content type
-	req.Header.Set("Authorization", "Bearer " + o.APIKey)
+	req.Header.Set("Authorization", "Bearer "+o.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 	// creates a channel (go version of pipe) for the caller to read StreamEvents from
 	ch := make(chan StreamEvent)
@@ -94,7 +94,7 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 			buf.ReadFrom(res.Body)
 			ch <- StreamEvent{
 				Type: "error",
-				Err:  fmt.Errorf("openrouter api returned status %d: %s", res.StatusCode, buf.String()),
+				Err:  fmt.Errorf("%s returned status %d: %s", o.BaseURL, res.StatusCode, buf.String()),
 			}
 			return
 		}

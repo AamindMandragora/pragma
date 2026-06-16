@@ -1,0 +1,4 @@
+ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT 'Untitled';
+ALTER TABLE sessions ADD COLUMN cwd TEXT NOT NULL DEFAULT '/';
+ALTER TABLE messages ADD COLUMN tool_calls TEXT;
+ALTER TABLE messages ADD COLUMN tool_call_id TEXT;
