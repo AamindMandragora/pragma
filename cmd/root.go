@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/AamindMandragora/pragma/internal/agent"
 	"github.com/AamindMandragora/pragma/internal/config"
@@ -165,6 +167,33 @@ func launchTUI() {
 	}
 	// sets the agent's budget
 	a.Budget = budget
+
+	// creates a channel to intercept interrupts
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// this function locks the manager, loops through processes and cleans them up, then unlocks
+	cleanupProcesses := func() {
+		manager.M.Lock()
+		for _, p := range manager.Processes {
+			if p.Cleanup != nil {
+				p.Cleanup()
+			}
+		}
+		manager.M.Unlock()
+	}
+
+	// when tui.Start() returns normally, this fires
+	defer cleanupProcesses()
+
+	// if we catch a signal that isn't handled in the TUI, then we cleanup manually and exit
+	go func() {
+		<-sigChan
+		fmt.Fprintln(os.Stderr, "\n[pragma] Interrupted, cleaning up...")
+		cleanupProcesses()
+		os.Exit(0)
+	}()
+
 	// starts the TUI with the agent
 	tui.Start(a)
 }
