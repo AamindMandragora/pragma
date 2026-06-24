@@ -1,4 +1,4 @@
-package tools
+package exec
 
 import (
 	"encoding/json"
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/AamindMandragora/pragma/internal/process"
+	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
 type RunPythonTool struct {
@@ -46,6 +47,9 @@ func (r *RunPythonTool) Execute(args json.RawMessage) (string, error) {
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
+	}
+	if !tools.CheckInput(params.Code) {
+		return "access denied: code references an ignored file", nil
 	}
 	code := strings.ReplaceAll(params.Code, "\r\n", "\n")
 	tmpDir := os.TempDir()

@@ -1,4 +1,4 @@
-package tools
+package exec
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/AamindMandragora/pragma/internal/process"
+	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
 // run command tools must have a process manager
@@ -41,6 +42,9 @@ func (r *RunCommandTool) Execute(args json.RawMessage) (string, error) {
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
+	}
+	if !tools.CheckInput(params.Command) {
+		return "access denied: command references an ignored file", nil
 	}
 	// runs the command through the process manager
 	proc, err := r.Manager.Start(params.Command, time.Duration(params.Timeout)*time.Second, "SHELL")

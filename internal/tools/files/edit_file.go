@@ -1,10 +1,12 @@
 package files
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
-	"encoding/json"
+
+	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
 type EditFileTool struct{}
@@ -47,6 +49,9 @@ func (e EditFileTool) Execute(args json.RawMessage) (string, error) {
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
+	}
+	if tools.IsIgnored(params.Path) {
+		return "", fmt.Errorf("access denied: %s is in .agentignore", params.Path)
 	}
 	content, err := os.ReadFile(params.Path)
 	if err != nil {

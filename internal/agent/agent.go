@@ -434,6 +434,8 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 			if err != nil {
 				res = "tool error: " + err.Error()
 			}
+			// remove files in .agentignore from output
+			res = tools.ScrubOutput(res)
 			a.emit(AgentEvent{Type: "tool_result", Name: tc.Name, Content: res})
 			if a.CurrentModel.ToolMode == "native" {
 				a.History = append(a.History, llm.Message{Role: "tool", Content: res, TCID: tc.Id})

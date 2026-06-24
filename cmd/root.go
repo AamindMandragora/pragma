@@ -12,6 +12,7 @@ import (
 	"github.com/AamindMandragora/pragma/internal/llm"
 	"github.com/AamindMandragora/pragma/internal/process"
 	"github.com/AamindMandragora/pragma/internal/tools"
+	exectools "github.com/AamindMandragora/pragma/internal/tools/exec"
 	filetools "github.com/AamindMandragora/pragma/internal/tools/files"
 	gittools "github.com/AamindMandragora/pragma/internal/tools/git"
 	"github.com/AamindMandragora/pragma/internal/tui"
@@ -151,8 +152,8 @@ func launchTUI() {
 	}
 	registry.Register(&tools.WebFetchTool{})
 	// passes the manager to the run command tools
-	registry.Register(&tools.RunCommandTool{Manager: manager})
-	registry.Register(&tools.RunPythonTool{Manager: manager})
+	registry.Register(&exectools.RunCommandTool{Manager: manager})
+	registry.Register(&exectools.RunPythonTool{Manager: manager})
 	for _, tool := range gittools.RegisterAll() {
 		registry.Register(tool)
 	}
