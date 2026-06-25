@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/AamindMandragora/pragma/internal/tools"
+	"github.com/AamindMandragora/pragma/internal/process"
 )
 
 type EditFileTool struct{}
@@ -23,7 +23,7 @@ func (e *EditFileTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type": "object","properties": {"path": {"type": "string", "description": "Path to the file to edit"}, "old_text": {"type": "string", "description": "Exact text to find and replace. Must match the file content exactly including whitespace and indentation."}, "new_text": {"type": "string", "description": "Text to replace old_text with. Can be empty to delete the matched text."}},"required": ["path", "old_text", "new_text"]}`)
 }
 
-func (e* EditFileTool) ConfirmSummary(args json.RawMessage) string {
+func (e *EditFileTool) ConfirmSummary(args json.RawMessage) string {
 	var params struct {
 		Path    string `json:"path"`
 		OldText string `json:"old_text"`
@@ -50,7 +50,7 @@ func (e EditFileTool) Execute(args json.RawMessage) (string, error) {
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
 	}
-	if tools.IsIgnored(params.Path) {
+	if process.IsIgnored(params.Path) {
 		return "", fmt.Errorf("access denied: %s is in .agentignore", params.Path)
 	}
 	content, err := os.ReadFile(params.Path)
