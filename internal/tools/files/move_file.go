@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/AamindMandragora/pragma/internal/tools"
+	"github.com/AamindMandragora/pragma/internal/process"
 )
 
 type MoveFileTool struct{}
@@ -31,10 +31,10 @@ func (m *MoveFileTool) Execute(args json.RawMessage) (string, error) {
 		From string `json:"from"`
 		To   string `json:"to"`
 	}
-	if tools.IsIgnored(params.From) {
+	if process.IsIgnored(params.From) {
 		return "", fmt.Errorf("access denied: %s is in .agentignore", params.From)
 	}
-	if tools.IsIgnored(params.To) {
+	if process.IsIgnored(params.To) {
 		return "", fmt.Errorf("access denied: %s is in .agentignore", params.To)
 	}
 	if err := json.Unmarshal(args, &params); err != nil {

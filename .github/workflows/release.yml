@@ -1,0 +1,83 @@
+name: Release
+
+# auto triggers whenever we push a version tag
+on:
+  push:
+    tags: ['v*']
+
+# the name of our bundled c library
+env:
+    LIB_NAME: pragma_lib
+
+jobs:
+  build:
+    strategy:
+      # list of job configs for each os and architecture
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            lib_cmd: gcc -shared -fPIC -o ${LIB_NAME}.so csrc/*.c -ldl
+            lib_name: ${LIB_NAME}.so
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            lib_cmd: aarch64-linux-gnu-gcc -shared -fPIC -o ${LIB_NAME}.so csrc/*.c -ldl
+            lib_name: ${LIB_NAME}.so
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            lib_cmd: gcc -dynamiclib -o ${LIB_NAME}.dylib csrc/*.c -ldl
+            lib_name: ${LIB_NAME}.dylib
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            lib_cmd: gcc -target x86_64-apple-macos -dynamiclib -o ${LIB_NAME}.dylib csrc/*.c -ldl
+            lib_name: ${LIB_NAME}.dylib
+          - os: windows-latest
+            goos: windows
+            goarch: arm
+            lib_cmd: ""
+            lib_name: ""
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            lib_cmd: ""
+            lib_name: ""
+
+    # creates a build for each entry in the matrix
+    runs-on: ${{ matrix.os }}
+    steps:
+      # checks out repo at given version and sets up go
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      # runs the os-specific build command for the c library
+      - name: Build guard library
+        if: matrix.lib_cmd != ''
+        run: ${{ matrix.lib_cmd }}
+
+      # builds pragma executable according to the os and architecture
+      - name: Build pragma
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -o pragma${{ matrix.goos == 'windows' && '.exe' || '' }} .
+
+      # copies both into a distribution directory and compresses into a tarball
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp pragma* dist/ 2>/dev/null || true
+          if [ -f "${{ matrix.lib_name }}" ]; then 
+            cp "${{ matrix.lib_name }}" dist/
+          fi
+          tar -czf pragma-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz -C dist .
+
+      # uploads tarball to the release
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: pragma-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz

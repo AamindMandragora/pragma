@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/AamindMandragora/pragma/internal/tools"
+	"github.com/AamindMandragora/pragma/internal/process"
 )
 
 type DeleteFileTool struct{}
@@ -37,7 +37,7 @@ func (d *DeleteFileTool) Execute(args json.RawMessage) (string, error) {
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
 	}
-	if tools.IsIgnored(params.Path) {
+	if process.IsIgnored(params.Path) {
 		return "", fmt.Errorf("access denied: %s is in .agentignore", params.Path)
 	}
 	err := os.Remove(params.Path)
