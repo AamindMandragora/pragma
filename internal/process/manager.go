@@ -3,7 +3,9 @@ package process
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -55,9 +57,21 @@ func (m *Manager) Start(command string, timeout time.Duration, lang string) (*Pr
 	}
 	cmd.Stdout = p.Stdout
 	cmd.Stderr = p.Stderr
+
 	// depending on OS set the system process attributes for shell commands
 	if lang == "SHELL" {
 		setSysProcAttr(cmd)
+	}
+
+	// constructs the path to the path ignoring lib
+	exe, _ := os.Executable()
+	libPath := filepath.Join(filepath.Dir(exe), cLibName())
+	// loads the env string
+	if env := preloadEnv(libPath); env != "" {
+		// if the path exists, append it to the process's env
+		if _, err := os.Stat(libPath); err == nil {
+			cmd.Env = append(os.Environ(), env, "PRAGMA_BLOCKLIST"+GetBlocklist())
+		}
 	}
 
 	// starts the command, cleans up if fails

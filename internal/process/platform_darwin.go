@@ -1,4 +1,4 @@
-//go:build !darwin && !windows
+//go:build darwin
 
 package process
 
@@ -24,9 +24,9 @@ func setSysProcAttr(cmd *exec.Cmd) {
 }
 
 func preloadEnv(libPath string) string {
-    return "LD_PRELOAD=" + libPath
+    return "DYLD_INSERT_LIBRARIES=" + libPath
 }
 
 func cLibName() string {
-    return "pragma_lib.so"
+    return "pragma_lib.dylib"
 }

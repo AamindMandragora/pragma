@@ -1,4 +1,4 @@
-package tools
+package process
 
 import (
 	"bufio"
@@ -31,6 +31,7 @@ func init() {
 	}
 }
 
+// returns a csv of the patterns to ignore
 func GetBlocklist() string {
 	return strings.Join(ignoredPatterns, ",")
 }
