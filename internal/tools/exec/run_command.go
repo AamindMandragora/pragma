@@ -1,4 +1,4 @@
-package tools
+package exec
 
 import (
 	"encoding/json"
@@ -41,6 +41,9 @@ func (r *RunCommandTool) Execute(args json.RawMessage) (string, error) {
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
+	}
+	if !process.CheckInput(params.Command) {
+		return "access denied: command references an ignored file", nil
 	}
 	// runs the command through the process manager
 	proc, err := r.Manager.Start(params.Command, time.Duration(params.Timeout)*time.Second, "SHELL")

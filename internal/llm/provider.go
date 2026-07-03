@@ -114,7 +114,7 @@ func readKey(varName string) string {
 		scanner := bufio.NewScanner(bytes.NewReader(data))
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
-			// if line is empty ignore
+			// if line is empty or comment ignore
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}

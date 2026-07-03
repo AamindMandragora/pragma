@@ -20,3 +20,12 @@ func killTree(cmd *exec.Cmd) {
 }
 
 func setSysProcAttr(cmd *exec.Cmd) {}
+
+func preloadEnv(libPath string) string {
+	_ = libPath
+	return ""
+}
+
+func cLibName() string {
+	return ""
+}

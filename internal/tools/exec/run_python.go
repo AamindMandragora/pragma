@@ -1,4 +1,4 @@
-package tools
+package exec
 
 import (
 	"encoding/json"
@@ -47,6 +47,9 @@ func (r *RunPythonTool) Execute(args json.RawMessage) (string, error) {
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
 	}
+	if !process.CheckInput(params.Code) {
+		return "access denied: code references an ignored file", nil
+	}
 	code := strings.ReplaceAll(params.Code, "\r\n", "\n")
 	tmpDir := os.TempDir()
 	if tmpDir == "" {
@@ -57,7 +60,7 @@ func (r *RunPythonTool) Execute(args json.RawMessage) (string, error) {
 		return "", err
 	}
 	defer os.Remove(path)
-	proc, err := r.Manager.Start(path, time.Duration(params.Timeout) * time.Second, "SHELL")
+	proc, err := r.Manager.Start(path, time.Duration(params.Timeout)*time.Second, "SHELL")
 	if err != nil {
 		return "", err
 	}

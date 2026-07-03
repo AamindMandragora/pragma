@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/AamindMandragora/pragma/internal/process"
 )
 
 type MoveFileTool struct{}
@@ -28,6 +30,12 @@ func (m *MoveFileTool) Execute(args json.RawMessage) (string, error) {
 	var params struct {
 		From string `json:"from"`
 		To   string `json:"to"`
+	}
+	if process.IsIgnored(params.From) {
+		return "", fmt.Errorf("access denied: %s is in .agentignore", params.From)
+	}
+	if process.IsIgnored(params.To) {
+		return "", fmt.Errorf("access denied: %s is in .agentignore", params.To)
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
