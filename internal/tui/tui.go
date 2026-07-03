@@ -27,6 +27,42 @@ var (
 	dimStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
 
+// ascii art shown as the first message on launch
+const banner = `
+                                  ....
+                                .'' .'''
+.                             .'   :
+\\                          .:    :
+ \\                        _:    :       ..----.._
+  \\                    .:::.....:::.. .'         ''.
+   \\                 .'  #-. .-######'     #        '.
+    \\                 '.##'/ ' ################       :
+     \\                  #####################         :
+      \\               ..##.-.#### .''''###'.._        :
+       \\             :--:########:            '.    .' :
+        \\..__...--.. :--:#######.'   '.         '.     :
+        :     :  : : '':'-:'':'::        .         '.  .'               _______    _______        __       _______   ___      ___       __
+        '---'''..: :    ':    '..'''.      '.        :'                |   __ "\  /"      \      /""\     /" _   "| |"  \    /"  |     /""\
+           \\  :: : :     '      ''''''.     '.      .:                (. |__) :)|:        |    /    \   (: ( \___)  \   \  //   |    /    \
+            \\ ::  : :     '            '.      '      :               |:  ____/ |_____/   )   /' /\  \   \/ \       /\\  \/.    |   /' /\  \
+             \\::   : :           ....' ..:       '     '.             (|  /      //      /   //  __'  \  //  \ ___ |: \.        |  //  __'  \
+              \\::  : :    .....####\\ .~~.:.             :           /|__/ \    |:  __   \  /   /  \\  \(:   _(  _||.  \    /:  | /   /  \\  \
+               \\':.:.:.:'#########.===. ~ |.'-.   . '''.. :         (_______)   |__|  \___)(___/    \___)\_______) |___|\__/|___|(___/    \___)
+                \\    .'  ########## \ \ _.' '. '-.       '''.
+                :\\  :     ########   \ \      '.  '-.        :
+               :  \\'    '   #### :    \ \      :.    '-.      :
+              :  .'\\   :'  :     :     \ \       :      '-.    :
+             : .'  .\\  '  :      :     :\ \       :        '.   :
+             ::   :  \\'  :.      :     : \ \      :          '. :
+             ::. :    \\  : :      :    ;  \ \     :           '.:
+              : ':    '\\ :  :     :     :  \:\     :        ..'
+                 :    ' \\ :        :     ;  \|      :   .'''
+                 '.   '  \\:                         :.''
+                  .:..... \\:       :            ..''
+                 '._____|'.\\......'''''''.:..'''
+                            \\
+`
+
 // messages will just have roles and contents
 type Message struct {
 	Role    string
@@ -49,6 +85,11 @@ type toolMessage struct {
 // confirm messages just hold the summary
 type confirmMessage struct {
 	command string
+}
+
+// hashCommandMsg asks Update to run a hash command (used by menu selections)
+type hashCommandMsg struct {
+	cmd string
 }
 
 // either onboarding or chat
@@ -75,11 +116,19 @@ type TUIModel struct {
 	onboardStep  int
 	onboardData  map[string]string
 	onboardTiers []map[string]string
+	menu         *Menu
 }
 
 // when the model starts we have the textinput cursor blink
 func (t *TUIModel) Init() tea.Cmd {
 	return textinput.Blink
+}
+func (t *TUIModel) openMenu(m Menu) {
+	t.menu = &m
+}
+
+func (t *TUIModel) closeMenu() {
+	t.menu = nil
 }
 
 // gets the first arg in the json
@@ -103,6 +152,14 @@ func (t *TUIModel) updateViewportContent() {
 	var b strings.Builder
 	for _, msg := range t.messages {
 		switch msg.Role {
+		case "banner":
+			// rendered line by line without wrapping so the art stays intact
+			for _, line := range strings.Split(msg.Content, "\n") {
+				b.WriteString("  ")
+				b.WriteString(agentStyle.Render(line))
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
 		case "user":
 			b.WriteString(userStyle.Render("  ▶ You"))
 			b.WriteString("\n")
@@ -169,22 +226,91 @@ func (t *TUIModel) handleHashCommand(cmd string) string {
 	parts := strings.Fields(cmd)
 	command := parts[0]
 
+	// hashCmd builds an OnSelect that sends the command back through Update,
+	// so state mutations and output rendering happen on the update loop
+	hashCmd := func(c string) func() tea.Cmd {
+		return func() tea.Cmd {
+			return func() tea.Msg {
+				return hashCommandMsg{cmd: c}
+			}
+		}
+	}
+
 	switch command {
 	case "#help":
-		return `Available commands:
-  #help            — show this message
-  #clear           — clear chat history
-  #status          — show session info
-  #model           — show current model and tool mode
-  #switch <model>  — switch to a different model
-  #budget [amount] — show or set dollar budget
-  #tiers           — show configured model tiers
-  #cost            — show token usage and cost
-  #docs            — show recent task summaries
-  #arch            — show architecture doc
-  #sessions        — see list of recent session info
-  #undo            — revert to the last checkpoint
-  #quit            — exit Pragma`
+		t.openMenu(Menu{
+			Title: "Help commands",
+			Options: []MenuOption{
+				{
+					Label:       "#help",
+					Description: "show this message",
+					OnSelect:    hashCmd("#help"),
+				},
+				{
+					Label:       "#clear",
+					Description: "clear chat history",
+					OnSelect:    hashCmd("#clear"),
+				},
+				{
+					Label:       "#status",
+					Description: "show session info",
+					OnSelect:    hashCmd("#status"),
+				},
+				{
+					Label:       "#model",
+					Description: "show current model and tool mode",
+					OnSelect:    hashCmd("#model"),
+				},
+				{
+					Label:       "#switch <model>",
+					Description: "switch to a different model",
+					OnSelect:    hashCmd("#switch"),
+				},
+				{
+					Label:       "#budget [amount]",
+					Description: "show or set dollar budget",
+					OnSelect:    hashCmd("#budget"),
+				},
+				{
+					Label:       "#tiers",
+					Description: "show configured model tiers",
+					OnSelect:    hashCmd("#tiers"),
+				},
+				{
+					Label:       "#cost",
+					Description: "show token usage and cost",
+					OnSelect:    hashCmd("#cost"),
+				},
+				{
+					Label:       "#docs",
+					Description: "show recent task summaries",
+					OnSelect:    hashCmd("#docs"),
+				},
+				{
+					Label:       "#arch",
+					Description: "show architecture doc",
+					OnSelect:    hashCmd("#arch"),
+				},
+				{
+					Label:       "#sessions",
+					Description: "see list of recent session info",
+					OnSelect:    hashCmd("#sessions"),
+				},
+				{
+					Label:       "#undo",
+					Description: "revert to the last checkpoint",
+					OnSelect:    hashCmd("#undo"),
+				},
+				{
+					Label:       "#quit",
+					Description: "exit Pragma",
+					OnSelect: func() tea.Cmd {
+						return tea.Quit
+					},
+				},
+			},
+		})
+		return ""
 	case "#clear":
 		t.messages = t.messages[:0]
 		if len(t.agent.History) > 0 {
@@ -516,6 +642,17 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		t.confirmCmd = msg.command
 		t.updateViewportContent()
 		return t, nil
+	case hashCommandMsg:
+		// runs a hash command selected from the menu, on the update loop
+		result := t.handleHashCommand(msg.cmd)
+		if result == "EXIT" {
+			return t, tea.Quit
+		}
+		if result != "" {
+			t.messages = append(t.messages, Message{Role: "system", Content: result})
+			t.updateViewportContent()
+		}
+		return t, nil
 	}
 	var cmd tea.Cmd
 	t.input, cmd = t.input.Update(msg)
@@ -557,6 +694,16 @@ func wrap(text string, width int) string {
 
 // update wrapper function that delegates to onboarding or chat depending on state
 func (t *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if t.menu != nil {
+		if key, ok := msg.(tea.KeyMsg); ok {
+			done, cmd := t.menu.HandleKey(key)
+			if done {
+				t.closeMenu()
+			}
+			return t, cmd
+		}
+		return t, nil
+	}
 	switch t.state {
 	case StateOnboarding:
 		return t.updateOnboarding(msg)
@@ -694,6 +841,13 @@ func (t *TUIModel) viewChat() string {
 
 // wrapper function that delegates to onboarding or chat
 func (t *TUIModel) View() string {
+	if t.menu != nil {
+		var b strings.Builder
+		b.WriteString(t.menu.View())
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  ↑/↓ select · Enter confirm · Esc cancel"))
+		return b.String()
+	}
 	switch t.state {
 	case StateOnboarding:
 		return t.viewOnboarding()
@@ -739,6 +893,11 @@ func Start(a *agent.Agent) {
 		onboardTiers: []map[string]string{},
 	}
 
+	// shows the ascii banner as the first thing in the chat
+	if state == StateChat {
+		m.messages = append(m.messages, Message{Role: "banner", Content: strings.TrimPrefix(banner, "\n")})
+	}
+
 	// renders messages already in the history from a resumed session
 	if a != nil && len(a.History) > 1 {
 		for _, msg := range a.History[1:] {
@@ -756,6 +915,7 @@ func Start(a *agent.Agent) {
 			}
 		}
 	}
+	m.updateViewportContent()
 
 	// runs the model as a bubbletea program
 	p := tea.NewProgram(&m, tea.WithAltScreen())
