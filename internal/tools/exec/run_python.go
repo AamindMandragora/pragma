@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/AamindMandragora/pragma/internal/process"
+	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
 type RunPythonTool struct {
@@ -17,6 +18,10 @@ type RunPythonTool struct {
 
 func (r *RunPythonTool) Name() string {
 	return "run_python"
+}
+
+func (r *RunPythonTool) Access() tools.AccessLevel {
+	return tools.AccessExecute
 }
 
 func (r *RunPythonTool) Description() string {

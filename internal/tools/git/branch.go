@@ -1,11 +1,28 @@
 package git
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/AamindMandragora/pragma/internal/tools"
+)
 
 type BranchTool struct{ gitTool }
 
 func NewBranchTool() *BranchTool {
-	return &BranchTool{gitTool{name: "git_branch", description: "Lists, creates, or checks out branches", schema: json.RawMessage(`{"type":"object","properties":{"action":{"type":"string"},"name":{"type":"string"}},"required":["action"]}`)}}
+	return &BranchTool{gitTool{name: "git_branch", description: "Lists, creates, or checks out branches", schema: json.RawMessage(`{"type":"object","properties":{"action":{"type":"string"},"name":{"type":"string"}},"required":["action"]}`), access: tools.AccessWrite}}
+}
+
+func (t *BranchTool) ConfirmSummary(args json.RawMessage) string {
+	var params struct {
+		Action string `json:"action"`
+		Name   string `json:"name,omitempty"`
+	}
+	_ = json.Unmarshal(args, &params)
+	if params.Name != "" {
+		return fmt.Sprintf("git branch %s %s", params.Action, params.Name)
+	}
+	return fmt.Sprintf("git branch %s", params.Action)
 }
 
 func (t *BranchTool) Execute(args json.RawMessage) (string, error) {

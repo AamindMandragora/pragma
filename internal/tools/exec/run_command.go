@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/AamindMandragora/pragma/internal/process"
+	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
 // run command tools must have a process manager
@@ -16,6 +17,10 @@ type RunCommandTool struct {
 
 func (r *RunCommandTool) Name() string {
 	return "run_command"
+}
+
+func (r *RunCommandTool) Access() tools.AccessLevel {
+	return tools.AccessExecute
 }
 
 func (r *RunCommandTool) Description() string {

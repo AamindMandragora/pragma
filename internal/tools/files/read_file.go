@@ -6,12 +6,17 @@ import (
 	"os"
 
 	"github.com/AamindMandragora/pragma/internal/process"
+	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
 type ReadFileTool struct{}
 
 func (r *ReadFileTool) Name() string {
 	return "read_file"
+}
+
+func (r *ReadFileTool) Access() tools.AccessLevel {
+	return tools.AccessRead
 }
 
 func (r *ReadFileTool) Description() string {

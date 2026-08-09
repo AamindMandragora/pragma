@@ -78,7 +78,8 @@ func (m *Menu) View() string {
 			line = "> " + opt.Label
 			b.WriteString(selectedStyle.Render(line))
 			if opt.Description != "" {
-				b.WriteString(" - " + descStyle.Render(opt.Description))
+				b.WriteString(" - ")
+				b.WriteString(descStyle.Render(opt.Description))
 			}
 		} else {
 			b.WriteString(normalStyle.Render(line))

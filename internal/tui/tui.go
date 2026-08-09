@@ -12,6 +12,7 @@ import (
 
 	"github.com/AamindMandragora/pragma/internal/agent"
 	"github.com/AamindMandragora/pragma/internal/db"
+	"github.com/AamindMandragora/pragma/internal/tools"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea" // bubbletea is what allows us to create our tui and it's industry standard
@@ -102,27 +103,29 @@ const (
 
 // TUIModel holds an agent, text input, viewport, messages, height and width, state, onboarding steps, data, tiers, whether its streaming or confirming
 type TUIModel struct {
-	agent        *agent.Agent
-	input        textinput.Model
-	viewport     viewport.Model
-	messages     []Message
-	streaming    bool
-	width        int
-	height       int
-	confirming   bool
-	confirmCmd   string
-	confirmChan  chan bool
-	state        TUIState
-	onboardStep  int
-	onboardData  map[string]string
-	onboardTiers []map[string]string
-	menu         *Menu
+	agent              *agent.Agent
+	input              textinput.Model
+	viewport           viewport.Model
+	messages           []Message
+	streaming          bool
+	width              int
+	height             int
+	confirming         bool
+	confirmAwaitReason bool
+	confirmCmd         string
+	confirmChan        chan tools.ConfirmResponse
+	state              TUIState
+	onboardStep        int
+	onboardData        map[string]string
+	onboardTiers       []map[string]string
+	menu               *Menu
 }
 
 // when the model starts we have the textinput cursor blink
 func (t *TUIModel) Init() tea.Cmd {
 	return textinput.Blink
 }
+
 func (t *TUIModel) openMenu(m Menu) {
 	t.menu = &m
 }
@@ -214,7 +217,11 @@ func (t *TUIModel) updateViewportContent() {
 	if t.confirming {
 		b.WriteString(toolStyle.Render("  ⚡ Run command: " + t.confirmCmd))
 		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("  allow? [y/n]"))
+		if t.confirmAwaitReason {
+			b.WriteString(dimStyle.Render("  reject reason (Enter to submit, Esc to cancel):"))
+		} else {
+			b.WriteString(dimStyle.Render("  allow? [y]es / [n]o / [r]eject with reason"))
+		}
 		b.WriteString("\n\n")
 	}
 	t.viewport.SetContent(b.String())
@@ -226,8 +233,7 @@ func (t *TUIModel) handleHashCommand(cmd string) string {
 	parts := strings.Fields(cmd)
 	command := parts[0]
 
-	// hashCmd builds an OnSelect that sends the command back through Update,
-	// so state mutations and output rendering happen on the update loop
+	// hashCmd builds an OnSelect that sends the command back through Update, so state mutations and output rendering happen on the update loop
 	hashCmd := func(c string) func() tea.Cmd {
 		return func() tea.Cmd {
 			return func() tea.Msg {
@@ -302,6 +308,11 @@ func (t *TUIModel) handleHashCommand(cmd string) string {
 					OnSelect:    hashCmd("#undo"),
 				},
 				{
+					Label:       "#confirm [---|r--|rw-|rwx]",
+					Description: "show or set tool confirm mode",
+					OnSelect:    hashCmd("#confirm"),
+				},
+				{
 					Label:       "#quit",
 					Description: "exit Pragma",
 					OnSelect: func() tea.Cmd {
@@ -311,6 +322,19 @@ func (t *TUIModel) handleHashCommand(cmd string) string {
 			},
 		})
 		return ""
+	case "#confirm":
+		if t.agent == nil || t.agent.Registry == nil {
+			return "No agent running."
+		}
+		if len(parts) < 2 {
+			return fmt.Sprintf("Confirm mode: %s (---=confirm all, r--=auto-approve read, rw-=auto-approve read+write, rwx=auto-approve all)", t.agent.Registry.ConfirmMode)
+		}
+		mode, err := tools.ParseConfirmMode(parts[1])
+		if err != nil {
+			return err.Error()
+		}
+		t.agent.Registry.ConfirmMode = mode
+		return fmt.Sprintf("Confirm mode set to %s", mode)
 	case "#clear":
 		t.messages = t.messages[:0]
 		if len(t.agent.History) > 0 {
@@ -319,7 +343,11 @@ func (t *TUIModel) handleHashCommand(cmd string) string {
 		return "Chat cleared."
 	case "#status":
 		msgCount := len(t.agent.History) - 1
-		return fmt.Sprintf("Messages: %d | Model: %s | Tool mode: %s", msgCount, t.agent.CurrentModel.Name, t.agent.CurrentModel.ToolMode)
+		confirmMode := tools.ConfirmModeR
+		if t.agent.Registry != nil {
+			confirmMode = t.agent.Registry.ConfirmMode
+		}
+		return fmt.Sprintf("Messages: %d | Model: %s | Tool mode: %s | Confirm: %s", msgCount, t.agent.CurrentModel.Name, t.agent.CurrentModel.ToolMode, confirmMode)
 	case "#docs":
 		recent := agent.LoadRecentDocs(3)
 		if recent == "" {
@@ -344,7 +372,11 @@ func (t *TUIModel) handleHashCommand(cmd string) string {
 		return msg
 	case "#model":
 		m := t.agent.CurrentModel
-		return fmt.Sprintf("Model: %s\n  Max tokens: %d\n  Tool mode: %s\n  Provider: %s", m.Name, m.MaxTokens, m.ToolMode, m.Provider.GetName())
+		confirmMode := tools.ConfirmModeR
+		if t.agent.Registry != nil {
+			confirmMode = t.agent.Registry.ConfirmMode
+		}
+		return fmt.Sprintf("Model: %s\n  Max tokens: %d\n  Tool mode: %s\n  Confirm: %s\n  Provider: %s", m.Name, m.MaxTokens, m.ToolMode, confirmMode, m.Provider.GetName())
 	case "#switch":
 		if len(parts) < 2 {
 			return "Usage: #switch <model_name>"
@@ -540,17 +572,53 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		t.updateViewportContent()
 		return t, nil
 	case tea.KeyMsg:
-		// if we're confirming treat the message as a yes or no
+		// if we're confirming treat the message as approve / reject-silent / reject-with-reason
 		if t.confirming {
+			if t.confirmAwaitReason {
+				switch msg.String() {
+				case "ctrl+c":
+					return t, tea.Quit
+				case "esc":
+					t.confirmAwaitReason = false
+					t.input.SetValue("")
+					t.input.Placeholder = "Ask pragma..."
+					t.updateViewportContent()
+					return t, nil
+				case "enter":
+					reason := strings.TrimSpace(t.input.Value())
+					t.input.SetValue("")
+					t.input.Placeholder = "Ask pragma..."
+					t.confirmAwaitReason = false
+					t.confirming = false
+					if reason == "" {
+						t.messages = append(t.messages, Message{Role: "tool_call", Content: "rejected: " + t.confirmCmd})
+						t.confirmChan <- tools.ConfirmResponse{Action: tools.ConfirmRejectSilent}
+					} else {
+						t.messages = append(t.messages, Message{Role: "tool_call", Content: "rejected: " + t.confirmCmd + " — " + reason})
+						t.confirmChan <- tools.ConfirmResponse{Action: tools.ConfirmRejectReason, Reason: reason}
+					}
+					t.updateViewportContent()
+					return t, nil
+				}
+				var cmd tea.Cmd
+				t.input, cmd = t.input.Update(msg)
+				return t, cmd
+			}
 			switch msg.String() {
+			case "ctrl+c":
+				return t, tea.Quit
 			case "y", "Y":
 				t.confirming = false
 				t.messages = append(t.messages, Message{Role: "tool_call", Content: "approved: " + t.confirmCmd})
-				t.confirmChan <- true
+				t.confirmChan <- tools.ConfirmResponse{Action: tools.ConfirmApprove}
 			case "n", "N":
 				t.confirming = false
 				t.messages = append(t.messages, Message{Role: "tool_call", Content: "rejected: " + t.confirmCmd})
-				t.confirmChan <- false
+				t.confirmChan <- tools.ConfirmResponse{Action: tools.ConfirmRejectSilent}
+			case "r", "R":
+				t.confirmAwaitReason = true
+				t.input.SetValue("")
+				t.input.Placeholder = "Rejection reason..."
 			}
 			t.updateViewportContent()
 			return t, nil
@@ -639,7 +707,9 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case confirmMessage:
 		t.confirming = true
+		t.confirmAwaitReason = false
 		t.confirmCmd = msg.command
+		t.input.Placeholder = "Ask pragma..."
 		t.updateViewportContent()
 		return t, nil
 	case hashCommandMsg:
@@ -795,10 +865,10 @@ func (t *TUIModel) writeOnboardConfig() {
 	var tiersBuilder strings.Builder
 	for _, tier := range t.onboardTiers {
 		tiersBuilder.WriteString("[[model.tiers]]\n")
-		tiersBuilder.WriteString(fmt.Sprintf("model = \"%s\"\n", tier["model"]))
-		tiersBuilder.WriteString(fmt.Sprintf("provider = \"%s\"\n", tier["provider"]))
-		tiersBuilder.WriteString(fmt.Sprintf("api_key_var_name = \"%s\"\n", tier["api_key_var"]))
-		tiersBuilder.WriteString(fmt.Sprintf("threshold = %s\n\n", tier["threshold"]))
+		fmt.Fprintf(&tiersBuilder, "model = \"%s\"\n", tier["model"])
+		fmt.Fprintf(&tiersBuilder, "provider = \"%s\"\n", tier["provider"])
+		fmt.Fprintf(&tiersBuilder, "api_key_var_name = \"%s\"\n", tier["api_key_var"])
+		fmt.Fprintf(&tiersBuilder, "threshold = %s\n\n", tier["threshold"])
 	}
 
 	config := fmt.Sprintf(`%s[behavior]
@@ -870,7 +940,7 @@ func Start(a *agent.Agent) {
 	vp.SetContent("")
 
 	// channel that holds the confirm events
-	confirmChan := make(chan bool)
+	confirmChan := make(chan tools.ConfirmResponse)
 
 	// if a nil model was passed in we're onboarding otherwise chatting
 	state := StateChat
@@ -920,9 +990,9 @@ func Start(a *agent.Agent) {
 	// runs the model as a bubbletea program
 	p := tea.NewProgram(&m, tea.WithAltScreen())
 
-	// if we have an agent and tools then we create the confirm function that just sends the message to the user asking yes or no
+	// if we have an agent and tools then we create the confirm function that prompts for approve / reject
 	if a != nil && a.Registry != nil {
-		a.Registry.Confirm = func(toolName string, summary string) bool {
+		a.Registry.Confirm = func(toolName string, summary string) tools.ConfirmResponse {
 			p.Send(confirmMessage{command: fmt.Sprintf("[%s] %s", toolName, summary)})
 			return <-confirmChan
 		}

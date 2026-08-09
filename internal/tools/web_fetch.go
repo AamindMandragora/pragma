@@ -15,6 +15,10 @@ func (w WebFetchTool) Name() string {
 	return "web_fetch"
 }
 
+func (w WebFetchTool) Access() AccessLevel {
+	return AccessRead
+}
+
 func (w WebFetchTool) Description() string {
 	return "Fetches and reads the text content of a web page. Use for reading documentation, API references, error lookups, academic pages, GitHub READMEs, or any URL the user provides."
 }

@@ -7,12 +7,17 @@ import (
 	"strings"
 
 	"github.com/AamindMandragora/pragma/internal/process"
+	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
 type EditFileTool struct{}
 
 func (e *EditFileTool) Name() string {
 	return "edit_file"
+}
+
+func (e *EditFileTool) Access() tools.AccessLevel {
+	return tools.AccessWrite
 }
 
 func (e *EditFileTool) Description() string {

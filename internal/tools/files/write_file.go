@@ -7,12 +7,17 @@ import (
 	"path/filepath"
 
 	"github.com/AamindMandragora/pragma/internal/process"
+	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
 type WriteFileTool struct{}
 
 func (w *WriteFileTool) Name() string {
 	return "write_file"
+}
+
+func (w *WriteFileTool) Access() tools.AccessLevel {
+	return tools.AccessWrite
 }
 
 func (w *WriteFileTool) Description() string {

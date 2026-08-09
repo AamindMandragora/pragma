@@ -53,6 +53,10 @@ func (p *PluginTool) Name() string {
 	return p.Manifest.Name
 }
 
+func (p *PluginTool) Access() AccessLevel {
+	return AccessExecute
+}
+
 func (p *PluginTool) Description() string {
 	return p.Manifest.Description
 }
