@@ -13,6 +13,7 @@ import (
 
 	"github.com/AamindMandragora/pragma/internal/db"
 	"github.com/AamindMandragora/pragma/internal/llm"
+	"github.com/AamindMandragora/pragma/internal/llm/catalog"
 	"github.com/AamindMandragora/pragma/internal/process"
 	"github.com/AamindMandragora/pragma/internal/tools"
 	"github.com/google/uuid"
@@ -54,6 +55,9 @@ type Agent struct {
 	LastModelUsed    string
 	Budget           float64
 	SessionID        uuid.UUID
+	// forceAskUser restricts tool use to ask_user until it is called (plan-mode retry escalation)
+	forceAskUser   bool
+	forceAskReason string
 }
 
 // creates an agent with current model equal to the first one in tiers, builds the system prompt and puts it in the history
@@ -136,9 +140,14 @@ You have tools available to inspect files, edit files, run commands, fetch web p
 - If you need to run something too complex to do in the shell, write a short python script and use run_python to execute.
 - Use web_fetch to read web pages, documentation, API references, or any URL. The user may give you URLs to read, or you can fetch documentation pages you know about.
 - Use git_status to inspect the working tree, git_diff to review changes, git_log to inspect recent commits, git_branch to list/create/check out branches, git_stash to push or pop stash entries, and git_commit to stage and commit changes.
-- Never use run_command to communicate with the user. All communication goes in your response text.
+- Never use run_command to communicate with the user. Ordinary replies go in your response text; structured questions that need a decision go through ask_user.
 - If you need to run multiple independent commands, call them all rather than waiting between them.
 - If you need to reason about a tool's output before deciding what to do next, make only ONE tool call. You will see the result and can then decide your next action. Only make multiple tool calls in one response if they are independent of each other.
+- Use ask_user to pause and ask the user when you are stuck or need a design decision. Pass what you tried, what is going wrong, and a clear question.
+
+# Escalation
+
+If you have attempted multiple approaches and none are working, or if you need a design decision you cannot make yourself, call ask_user. This is preferred over guessing or continuing to burn tokens on failing approaches.
 
 # Code references
 
@@ -204,56 +213,44 @@ func (a *Agent) emit(event AgentEvent) {
 	}
 }
 
-// map of model name to input/output price per million tokens
-var pricing = map[string][2]float64{
-	"gpt-4.1-nano":             {0.10, 0.40},
-	"gpt-4.1-mini":             {0.40, 1.60},
-	"gpt-4o-mini":              {0.15, 0.60},
-	"gpt-4o":                   {2.50, 10.00},
-	"gpt-4-turbo":              {10.00, 30.00},
-	"gpt-4":                    {30.00, 60.00},
-	"gpt-4.5":                  {75.00, 150.00},
-	"gpt-5-nano":               {0.05, 0.40},
-	"gpt-5-mini":               {0.25, 2.00},
-	"gpt-5":                    {1.25, 10.00},
-	"gpt-5-pro":                {21.00, 168.00},
-	"gpt-5.3-codex":            {1.25, 10.00},
-	"gpt-5.4-mini":             {0.75, 4.50},
-	"gpt-5.4":                  {2.50, 15.00},
-	"gpt-5.4-pro":              {30.00, 180.00},
-	"gpt-5.5":                  {5.00, 30.00},
-	"gpt-5.5-pro":              {30.00, 180.00},
-	"qwen/qwen3-coder":         {0.22, 1.80},
-	"qwen/qwen3.6-plus":        {0.325, 1.95},
-	"deepseek/deepseek-coder":  {0.14, 0.28},
-	"deepseek/deepseek-chat":   {0.14, 0.28},
-	"meta-llama/llama-3.3-70b": {0.70, 0.90},
-	"meta-llama/llama-3-405b":  {2.66, 2.66},
-	"mistralai/mistral-large":  {2.00, 6.00},
-	"google/gemini-2.5-flash":  {0.15, 0.60},
-	"google/gemini-2.5-pro":    {1.25, 5.00},
-	"cohere/command-r-plus":    {2.50, 10.00},
+// RequireAskUser forces the next agent turn to call ask_user before any other tools.
+// Used when plan-mode step retries are exhausted.
+func (a *Agent) RequireAskUser(reason string) {
+	a.forceAskUser = true
+	a.forceAskReason = reason
+	msg := "Forced escalation: you must call ask_user now. Do not call any other tools until you have asked the user."
+	if reason != "" {
+		msg += "\nReason: " + reason
+	}
+	a.History = append(a.History, llm.Message{Role: "system", Content: msg})
+	if err := db.SaveMessage(a.SessionID, a.History[len(a.History)-1]); err != nil {
+		logger.Printf("SaveMessage failed: %v", err)
+	}
 }
 
-// calculates the cost based on the token usage
-func calculateCost(usage *llm.TokenUsage) float64 {
-	// attempts to find a key containing the model's name and uses it
-	prices, ok := pricing[usage.Model]
-	if !ok {
-		for key, p := range pricing {
-			if strings.HasPrefix(usage.Model, key) || strings.HasSuffix(usage.Model, key) {
-				prices = p
-				ok = true
-				break
-			}
+func (a *Agent) askUserOnlyTools() []llm.ToolDef {
+	for _, t := range a.Registry.List() {
+		if t.Name == "ask_user" {
+			return []llm.ToolDef{t}
 		}
 	}
+	return nil
+}
+
+// calculates the cost based on the token usage using the embedded model catalog
+func calculateCost(usage *llm.TokenUsage) float64 {
+	inputPrice, cachedPrice, outputPrice, ok := catalog.Price(usage.Model)
 	if !ok {
 		return 0
 	}
-	inputCost := float64(usage.InputTokens) / 1_000_000 * prices[0]
-	outputCost := float64(usage.OutputTokens) / 1_000_000 * prices[1]
-	return inputCost + outputCost
+	uncached := usage.InputTokens - usage.CachedInputTokens
+	if uncached < 0 {
+		uncached = 0
+	}
+	inputCost := float64(uncached) / 1_000_000 * inputPrice
+	cachedCost := float64(usage.CachedInputTokens) / 1_000_000 * cachedPrice
+	outputCost := float64(usage.OutputTokens) / 1_000_000 * outputPrice
+	return inputCost + cachedCost + outputCost
 }
 
 // runs the agent given a context and an input message
@@ -329,7 +326,11 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 		// if we have native tools, then we can pass in a list of ToolDef to the chat
 		var toolDefs []llm.ToolDef
 		if a.CurrentModel.ToolMode == "native" {
-			toolDefs = a.Registry.List()
+			if a.forceAskUser {
+				toolDefs = a.askUserOnlyTools()
+			} else {
+				toolDefs = a.Registry.List()
+			}
 		}
 		ch, err := a.CurrentModel.Provider.Chat(ctx, a.History, toolDefs, *a.CurrentModel)
 		if err != nil {
@@ -430,9 +431,20 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 		}
 		for _, tc := range toolCalls {
 			a.emit(AgentEvent{Type: "tool_call", Name: tc.Name, Args: string(tc.Args)})
-			res, err := a.Registry.Dispatch(tc.Name, tc.Args)
-			if err != nil {
-				res = "tool error: " + err.Error()
+			var res string
+			askedUser := false
+			if a.forceAskUser && tc.Name != "ask_user" {
+				res = "forced escalation: call ask_user only"
+			} else {
+				var dispatchErr error
+				res, dispatchErr = a.Registry.Dispatch(tc.Name, tc.Args)
+				if dispatchErr != nil {
+					res = "tool error: " + dispatchErr.Error()
+				} else if tc.Name == "ask_user" {
+					askedUser = true
+					a.forceAskUser = false
+					a.forceAskReason = ""
+				}
 			}
 			// remove files in .agentignore from output
 			res = process.ScrubOutput(res)
@@ -446,6 +458,14 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 			err = db.SaveMessage(a.SessionID, a.History[len(a.History)-1])
 			if err != nil {
 				logger.Printf("SaveMessage failed: %v", err)
+			}
+
+			if askedUser {
+				userMsg := llm.Message{Role: "user", Content: "User response to ask_user:\n" + res}
+				a.History = append(a.History, userMsg)
+				if saveErr := db.SaveMessage(a.SessionID, userMsg); saveErr != nil {
+					logger.Printf("SaveMessage failed: %v", saveErr)
+				}
 			}
 
 			// if we run out of budget after calling a tool then stop running them
