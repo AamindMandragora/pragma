@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/AamindMandragora/pragma/internal/agent"
+	"github.com/AamindMandragora/pragma/internal/tools"
 	tui "github.com/AamindMandragora/pragma/internal/tui"
 )
 
@@ -226,7 +227,7 @@ func TestConversationTimelineScrollsFromStartToTail(t *testing.T) {
 	if lipgloss.Height(view) > 24 {
 		t.Fatalf("conversation overflowed terminal height at its tail: %d", lipgloss.Height(view))
 	}
-	m.Update(tui.ApprovalRequestedMsg{Command: "go test ./...", Response: make(chan bool, 1)})
+	m.Update(tui.ApprovalRequestedMsg{Command: "go test ./...", Response: make(chan tools.ConfirmResponse, 1)})
 	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyHome}))
 	view = m.View().Content
 	if !strings.Contains(view, "AGENT A") {
@@ -236,7 +237,7 @@ func TestConversationTimelineScrollsFromStartToTail(t *testing.T) {
 
 func TestApprovalModalAndSanitization(t *testing.T) {
 	m := chatModel()
-	m.Update(tui.ApprovalRequestedMsg{Command: "rm -rf ./build", Directory: "/tmp/project", Risk: "destructive", Reason: "cleanup requested", Response: make(chan bool, 1)})
+	m.Update(tui.ApprovalRequestedMsg{Command: "rm -rf ./build", Directory: "/tmp/project", Risk: "destructive", Reason: "cleanup requested", Response: make(chan tools.ConfirmResponse, 1)})
 	view := m.View().Content
 	for _, want := range []string{"APPROVAL REQUIRED", "rm -rf ./build", "destructive", "[Alt+Y] approve once", "[Alt+N]", "reject"} {
 		if !strings.Contains(view, want) {

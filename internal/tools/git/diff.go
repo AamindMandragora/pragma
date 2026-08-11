@@ -1,11 +1,15 @@
 package git
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/AamindMandragora/pragma/internal/tools"
+)
 
 type DiffTool struct{ gitTool }
 
 func NewDiffTool() *DiffTool {
-	return &DiffTool{gitTool{name: "git_diff", description: "Returns git diff for the working tree or an optional ref", schema: json.RawMessage(`{"type":"object","properties":{"ref":{"type":"string"}}}`)}}
+	return &DiffTool{gitTool{name: "git_diff", description: "Returns git diff for the working tree or an optional ref", schema: json.RawMessage(`{"type":"object","properties":{"ref":{"type":"string"}}}`), access: tools.AccessRead}}
 }
 
 func (t *DiffTool) Execute(args json.RawMessage) (string, error) {

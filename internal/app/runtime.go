@@ -89,7 +89,7 @@ func (r *Runtime) NewAgent(sessionID string, enableSubagent bool) (*agent.Agent,
 			child.Budget = budget
 			// There is no terminal available to a child. Confirmable tools are
 			// allowed because delegation itself is the parent's explicit choice.
-			child.Registry.Confirm = func(string, string) bool { return true }
+			child.Registry.Confirm = func(string, string) tools.ConfirmResponse { return tools.ConfirmResponse{Action: tools.ConfirmApprove} }
 			child.Registry.AskUser = func([]string, string, string) string {
 				return "No interactive user is available in headless subagent mode. Make the safest reasonable assumption or report the blocker."
 			}

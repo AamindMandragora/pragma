@@ -17,6 +17,7 @@ import (
 	"github.com/AamindMandragora/pragma/internal/agent"
 	"github.com/AamindMandragora/pragma/internal/db"
 	"github.com/AamindMandragora/pragma/internal/llm/catalog"
+	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
 // The shell deliberately owns one set of visual tokens. Components use these
@@ -77,6 +78,7 @@ const (
 	keyApprove        = "alt+y"
 	keyApproveSession = "alt+a"
 	keyReject         = "alt+n"
+	keyRejectReason   = "alt+r"
 	keyEdit           = "alt+e"
 	maxScroll         = 1 << 30
 )
@@ -162,7 +164,7 @@ type (
 		Network   bool
 		Risk      string
 		Reason    string
-		Response  chan bool
+		Response  chan tools.ConfirmResponse
 	}
 	DiffUpdatedMsg struct {
 		File string
@@ -406,9 +408,10 @@ type TUIModel struct {
 	contextLimit       int
 	menu               *Menu
 	confirming         bool
+	confirmAwaitReason bool
 	confirmCmd         string
 	confirmInfo        ApprovalRequestedMsg
-	confirmChan        chan bool
+	confirmChan        chan tools.ConfirmResponse
 	asking             bool
 	askTried           []string
 	askProblem         string
@@ -438,7 +441,7 @@ func NewModel(a *agent.Agent) *TUIModel {
 		inspectorTab: InspectorPlan,
 		projectPath:  workingDirectory(),
 		input:        Editor{Width: defaultWidth - 6, Placeholder: "Ask the agent…", Focused: true},
-		confirmChan:  make(chan bool, 1),
+		confirmChan:  make(chan tools.ConfirmResponse, 1),
 		askChan:      make(chan string, 1),
 		onboardData:  make(map[string]string),
 	}
@@ -621,7 +624,7 @@ func (m *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case ApprovalRequestedMsg:
-		m.confirming, m.runState = true, RunApproval
+		m.confirming, m.confirmAwaitReason, m.runState = true, false, RunApproval
 		m.confirmInfo, m.confirmCmd = msg, msg.Command
 		m.appendEvent(TimelineEvent{Type: EventApproval, Status: StatusWaiting, Title: "APPROVAL REQUIRED", Body: msg.Command})
 		if msg.Response != nil {
@@ -767,6 +770,30 @@ type askUserMessage struct {
 
 func (m *TUIModel) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	name := keyName(key)
+	if m.confirming && m.confirmAwaitReason {
+		switch name {
+		case "esc":
+			m.confirmAwaitReason = false
+			m.input.Reset()
+			m.input.Placeholder = "Ask the agent…"
+			return nil
+		case "enter":
+			reason := strings.TrimSpace(m.input.Value())
+			m.input.Reset()
+			m.input.Placeholder = "Ask the agent…"
+			m.confirmAwaitReason, m.confirming, m.runState = false, false, RunWorking
+			if reason == "" {
+				m.confirmChan <- tools.ConfirmResponse{Action: tools.ConfirmRejectSilent}
+			} else {
+				m.confirmChan <- tools.ConfirmResponse{Action: tools.ConfirmRejectReason, Reason: reason}
+			}
+			return nil
+		}
+		if key.Mod == 0 && key.Text != "" {
+			m.input.Update(key)
+		}
+		return nil
+	}
 	if m.confirming {
 		if name == "home" {
 			m.followTail = false
@@ -801,15 +828,16 @@ func (m *TUIModel) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	}
 	if m.confirming {
 		switch name {
-		case keyApprove:
+		case keyApprove, keyApproveSession:
 			m.confirming, m.runState = false, RunWorking
-			m.confirmChan <- true
-		case keyApproveSession:
-			m.confirming, m.runState = false, RunWorking
-			m.confirmChan <- true
+			m.confirmChan <- tools.ConfirmResponse{Action: tools.ConfirmApprove}
 		case keyReject, "esc":
 			m.confirming, m.runState = false, RunWorking
-			m.confirmChan <- false
+			m.confirmChan <- tools.ConfirmResponse{Action: tools.ConfirmRejectSilent}
+		case keyRejectReason:
+			m.confirmAwaitReason = true
+			m.input.Reset()
+			m.input.Placeholder = "Rejection reason (Enter to submit, Esc to cancel)…"
 		case keyEdit:
 			m.input.SetValue(m.confirmCmd)
 			m.input.Focused = true
@@ -1311,10 +1339,11 @@ func (m *TUIModel) openHelp() {
 		{Label: "Alt+A/E/U/W", Description: "editor start/end, clear, and delete-word actions"},
 		{Label: "Alt+Enter / Shift+Enter", Description: "insert a newline in the composer"},
 		{Label: "Alt+C", Description: "cancel, then quit"},
-		{Label: "Alt+Y / Alt+A / Alt+E / Alt+N", Description: "approve, approve session, edit, or reject"},
+		{Label: "Alt+Y / Alt+A / Alt+E / Alt+N / Alt+R", Description: "approve, approve session, edit, reject, or reject with reason (during approval)"},
 		{Label: "HASH COMMANDS", Description: ""},
 		{Label: "#help", Description: "show this shortcuts and hash commands help"},
 		{Label: "#plan", Description: "toggle plan mode"},
+		{Label: "#confirm [---|r--|rw-|rwx]", Description: "show or set tool confirm mode"},
 		{Label: "#clear", Description: "clear the conversation and agent context"},
 		{Label: "#compact", Description: "compact the agent context"},
 		{Label: "#status", Description: "show current state, model, and plan mode"},
@@ -1355,6 +1384,19 @@ func (m *TUIModel) handleHashCommand(command string) string {
 		m.planScroll = 0
 		m.planApprovalScroll = 0
 		return "Plan mode disabled."
+	case "#confirm":
+		if m.agent == nil || m.agent.Registry == nil {
+			return "No agent running."
+		}
+		if len(parts) < 2 {
+			return fmt.Sprintf("Confirm mode: %s (---=confirm all, r--=auto-approve read, rw-=auto-approve read+write, rwx=auto-approve all)", m.agent.Registry.ConfirmMode)
+		}
+		mode, err := tools.ParseConfirmMode(parts[1])
+		if err != nil {
+			return err.Error()
+		}
+		m.agent.Registry.ConfirmMode = mode
+		return fmt.Sprintf("Confirm mode set to %s", mode)
 	case "#clear":
 		m.events = nil
 		m.followTail = true
@@ -1378,13 +1420,21 @@ func (m *TUIModel) handleHashCommand(command string) string {
 		if m.planMode {
 			planStatus = "on"
 		}
-		return fmt.Sprintf("Messages: %d | Model: %s | Tool mode: %s | Plan mode: %s", max(0, len(m.agent.History)-1), m.agent.CurrentModel.Name, m.agent.CurrentModel.ToolMode, planStatus)
+		confirmMode := tools.ConfirmModeR
+		if m.agent.Registry != nil {
+			confirmMode = m.agent.Registry.ConfirmMode
+		}
+		return fmt.Sprintf("Messages: %d | Model: %s | Tool mode: %s | Plan mode: %s | Confirm: %s", max(0, len(m.agent.History)-1), m.agent.CurrentModel.Name, m.agent.CurrentModel.ToolMode, planStatus, confirmMode)
 	case "#model":
 		if m.agent == nil || m.agent.CurrentModel == nil {
 			return "No model configured."
 		}
 		model := m.agent.CurrentModel
-		return fmt.Sprintf("Model: %s\n  Max tokens: %d\n  Effort: %s\n  Tool mode: %s\n  Provider: %s", model.Name, model.MaxTokens, model.Effort, model.ToolMode, model.Provider.GetName())
+		confirmMode := tools.ConfirmModeR
+		if m.agent.Registry != nil {
+			confirmMode = m.agent.Registry.ConfirmMode
+		}
+		return fmt.Sprintf("Model: %s\n  Max tokens: %d\n  Effort: %s\n  Tool mode: %s\n  Confirm: %s\n  Provider: %s", model.Name, model.MaxTokens, model.Effort, model.ToolMode, confirmMode, model.Provider.GetName())
 	case "#switch":
 		if m.agent == nil {
 			return "No agent running."
@@ -1872,7 +1922,11 @@ func (m *TUIModel) renderApprovalCard(maxHeight int) string {
 	if m.confirmInfo.Reason != "" {
 		lines = append(lines, "Reason: "+m.confirmInfo.Reason)
 	}
-	lines = append(lines, "", keyHintStyle.Render("[Alt+Y] approve once  [Alt+A] approve session  [Alt+E] edit  [Alt+N] reject"))
+	if m.confirmAwaitReason {
+		lines = append(lines, "", keyHintStyle.Render("Type a rejection reason, Enter to submit, Esc to cancel"))
+	} else {
+		lines = append(lines, "", keyHintStyle.Render("[Alt+Y] approve once  [Alt+A] approve session  [Alt+E] edit  [Alt+N] reject  [Alt+R] reject with reason"))
+	}
 	innerWidth := cardContentWidth(width)
 	var wrapped []string
 	for _, line := range lines {
@@ -2215,8 +2269,8 @@ func Start(a *agent.Agent) {
 	m := NewModel(a)
 	p := tea.NewProgram(m)
 	if a != nil && a.Registry != nil {
-		a.Registry.Confirm = func(toolName, summary string) bool {
-			response := make(chan bool, 1)
+		a.Registry.Confirm = func(toolName, summary string) tools.ConfirmResponse {
+			response := make(chan tools.ConfirmResponse, 1)
 			p.Send(ApprovalRequestedMsg{Command: summary, Risk: "tool confirmation", Reason: "This operation may change files or execute a command.", Response: response})
 			return <-response
 		}

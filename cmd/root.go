@@ -12,6 +12,7 @@ import (
 	"github.com/AamindMandragora/pragma/internal/app"
 	"github.com/AamindMandragora/pragma/internal/config"
 	"github.com/AamindMandragora/pragma/internal/db"
+	"github.com/AamindMandragora/pragma/internal/tools"
 	"github.com/AamindMandragora/pragma/internal/tui"
 	"github.com/spf13/cobra" // the package that allows us to create pragma as a CLI tool, used because it's industry standard
 )
@@ -202,7 +203,7 @@ func runHeadless(args []string) error {
 	// Headless execution cannot pause for a confirmation or an answer. The
 	// caller explicitly selected this mode, so confirmable tools proceed and
 	// ask_user receives a deterministic response instead of blocking forever.
-	a.Registry.Confirm = func(string, string) bool { return true }
+	a.Registry.Confirm = func(string, string) tools.ConfirmResponse { return tools.ConfirmResponse{Action: tools.ConfirmApprove} }
 	a.Registry.AskUser = func([]string, string, string) string {
 		return "No interactive user is available in headless mode. Make the safest reasonable assumption or report the blocker."
 	}

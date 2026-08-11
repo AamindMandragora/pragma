@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 
 	"github.com/AamindMandragora/pragma/internal/llm"
@@ -30,18 +31,109 @@ type OutputFilter interface {
 	Apply(text string, args json.RawMessage) (string, error)
 }
 
+// alias for the level of permissions needed
+type AccessLevel int
+
+const (
+	AccessRead AccessLevel = iota
+	AccessWrite
+	AccessExecute
+)
+
+// access returns whether a tool needs read, write, or exec permissions
+type AccessTool interface {
+	Tool
+	Access() AccessLevel
+}
+
+// alias for strings representing permissions (Read, Write, eXec)
+type ConfirmMode string
+
+const (
+	ConfirmModeN   ConfirmMode = "---"
+	ConfirmModeR   ConfirmMode = "r--"
+	ConfirmModeRW  ConfirmMode = "rw-"
+	ConfirmModeRWX ConfirmMode = "rwx"
+)
+
+// validates permission string
+func ParseConfirmMode(s string) (ConfirmMode, error) {
+	switch ConfirmMode(s) {
+	case ConfirmModeN, ConfirmModeR, ConfirmModeRW, ConfirmModeRWX:
+		return ConfirmMode(s), nil
+	default:
+		return "", fmt.Errorf("invalid confirm mode %q (use ---, r--, rw-, or rwx)", s)
+	}
+}
+
+// returns whether a tool needs confirmation
+func (m ConfirmMode) RequiresConfirm(level AccessLevel) bool {
+	switch m {
+	case ConfirmModeRWX:
+		return false
+	case ConfirmModeRW:
+		return level >= AccessExecute
+	case ConfirmModeR:
+		return level >= AccessWrite
+	case ConfirmModeN:
+		return true
+	default:
+		return level >= AccessWrite
+	}
+}
+
+// result of confirm prompt
+type ConfirmAction int
+
+const (
+	ConfirmApprove ConfirmAction = iota
+	ConfirmRejectSilent
+	ConfirmRejectReason
+)
+
+// struct returned by confirm channel
+type ConfirmResponse struct {
+	Action ConfirmAction
+	Reason string
+}
+
+// dispatch returns this on tool call rejection
+type Rejection struct {
+	Reason string
+}
+
+// sanitizes empty rejection
+func (r *Rejection) Error() string {
+	if r.Reason == "" {
+		return SilentRejectMessage
+	}
+	return r.Reason
+}
+
+const SilentRejectMessage = "user rejected this action, try a different approach"
+
+// returns a rejection if err is one
+func AsRejection(err error) (*Rejection, bool) {
+	var r *Rejection
+	if errors.As(err, &r) {
+		return r, true
+	}
+	return nil, false
+}
+
 // registry holds the tools and interactive callbacks for the TUI
 type Registry struct {
-	Tools   map[string]Tool
-	Filters map[string]OutputFilter
-	Confirm func(toolName string, summary string) bool
+	Tools       map[string]Tool
+	Filters     map[string]OutputFilter
+	ConfirmMode ConfirmMode
+	Confirm     func(toolName string, summary string) ConfirmResponse
 	// AskUser pauses execution and returns the user's free-text answer
 	AskUser func(tried []string, problem, question string) string
 }
 
 // creates a new registry
 func NewRegistry() *Registry {
-	return &Registry{Tools: make(map[string]Tool), Filters: make(map[string]OutputFilter)}
+	return &Registry{Tools: make(map[string]Tool), Filters: make(map[string]OutputFilter), ConfirmMode: ConfirmModeR}
 }
 
 // registers a tool by adding to the map
@@ -69,6 +161,29 @@ func (r *Registry) List() []llm.ToolDef {
 		tools = append(tools, llm.ToolDef{Name: tool.Name(), Description: tool.Description(), InputSchema: r.schemaWithFilters(tool.Schema())})
 	}
 	return tools
+}
+
+// normalizes access level to all tools
+func toolAccess(tool Tool) AccessLevel {
+	if at, ok := tool.(AccessTool); ok {
+		return at.Access()
+	}
+	return AccessExecute
+}
+
+// returns the tool's summary and whether it needs confirmation
+func toolSummary(tool Tool, args json.RawMessage) (string, bool) {
+	if ct, ok := tool.(ConfirmableTool); ok {
+		summary := ct.ConfirmSummary(args)
+		if summary == "" {
+			return "", false
+		}
+		return summary, true
+	}
+	if len(args) == 0 || string(args) == "{}" || string(args) == "null" {
+		return tool.Name(), true
+	}
+	return string(args), true
 }
 
 // tries to run the named tool with given args, return output
@@ -102,12 +217,19 @@ func (r *Registry) dispatch(name string, args json.RawMessage, applyFilters bool
 		}
 		return r.AskUser(params.Tried, params.Problem, params.Question), nil
 	}
-	// checks if it needs confirmation
-	if ct, ok := tool.(ConfirmableTool); ok {
-		// creates the summary and sends confirm request
-		summary := ct.ConfirmSummary(toolArgs)
-		if summary != "" && r.Confirm != nil && !r.Confirm(ct.Name(), summary) {
-			return "Rejected by user", nil
+	// confirm when the mode requires it for this tool's access level
+	if r.Confirm != nil && r.ConfirmMode.RequiresConfirm(toolAccess(tool)) {
+		summary, ask := toolSummary(tool, toolArgs)
+		if ask {
+			resp := r.Confirm(tool.Name(), summary)
+			switch resp.Action {
+			case ConfirmApprove:
+				// continue to execute
+			case ConfirmRejectReason:
+				return "", &Rejection{Reason: resp.Reason}
+			default:
+				return "", &Rejection{}
+			}
 		}
 	}
 	// executes the tool and returns output

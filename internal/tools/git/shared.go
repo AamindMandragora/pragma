@@ -24,11 +24,13 @@ func RegisterAll() []tools.Tool {
 type gitTool struct {
 	name, description string
 	schema            json.RawMessage
+	access            tools.AccessLevel
 }
 
-func (b *gitTool) Name() string            { return b.name }
-func (b *gitTool) Description() string     { return b.description }
-func (b *gitTool) Schema() json.RawMessage { return b.schema }
+func (b *gitTool) Name() string              { return b.name }
+func (b *gitTool) Description() string       { return b.description }
+func (b *gitTool) Schema() json.RawMessage   { return b.schema }
+func (b *gitTool) Access() tools.AccessLevel { return b.access }
 
 func runGit(args ...string) (string, error) {
 	cmd := exec.Command("git", args...)

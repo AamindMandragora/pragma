@@ -7,11 +7,15 @@ import (
 	"path/filepath"
 
 	"github.com/AamindMandragora/pragma/internal/process"
+	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
 type MoveFileTool struct{}
 
 func (m *MoveFileTool) Name() string { return "move_file" }
+func (m *MoveFileTool) Access() tools.AccessLevel {
+	return tools.AccessWrite
+}
 func (m *MoveFileTool) Description() string {
 	return "Moves or renames a file from one path to another"
 }

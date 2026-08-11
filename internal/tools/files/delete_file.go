@@ -6,12 +6,17 @@ import (
 	"os"
 
 	"github.com/AamindMandragora/pragma/internal/process"
+	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
 type DeleteFileTool struct{}
 
 func (d *DeleteFileTool) Name() string {
 	return "delete_file"
+}
+
+func (d *DeleteFileTool) Access() tools.AccessLevel {
+	return tools.AccessWrite
 }
 
 func (d *DeleteFileTool) Description() string {

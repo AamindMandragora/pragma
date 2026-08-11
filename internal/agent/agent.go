@@ -61,8 +61,8 @@ type Agent struct {
 	ContextSummary   string
 	contextSummaryAt int
 	compactions      int
-	forceAskUser   bool
-	forceAskReason string
+	forceAskUser     bool
+	forceAskReason   string
 }
 
 // creates an agent with current model equal to the first one in tiers, builds the system prompt and puts it in the history
@@ -449,7 +449,8 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 		if err != nil {
 			logger.Printf("SaveMessage failed: %v", err)
 		}
-		for _, tc := range toolCalls {
+		rejected := false
+		for i, tc := range toolCalls {
 			a.emit(AgentEvent{Type: "tool_call", Name: tc.Name, Args: string(tc.Args)})
 			var res string
 			askedUser := false
@@ -458,6 +459,42 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 			} else {
 				var dispatchErr error
 				res, dispatchErr = a.Registry.Dispatch(tc.Name, tc.Args)
+				if rej, ok := tools.AsRejection(dispatchErr); ok {
+					res = "Rejected by user"
+					a.emit(AgentEvent{Type: "tool_result", Name: tc.Name, Content: res})
+					if a.CurrentModel.ToolMode == "native" {
+						a.History = append(a.History, llm.Message{Role: "tool", Content: res, TCID: tc.Id})
+					} else {
+						a.History = append(a.History, llm.Message{Role: "tool", Content: fmt.Sprintf("Tool result for %s:\n%s", tc.Name, res), TCID: tc.Id})
+					}
+					if err := db.SaveMessage(a.SessionID, a.History[len(a.History)-1]); err != nil {
+						logger.Printf("SaveMessage failed: %v", err)
+					}
+					// stub remaining tool calls so native APIs get a result for each
+					for _, skipped := range toolCalls[i+1:] {
+						skipRes := "Skipped: previous tool call was rejected"
+						a.emit(AgentEvent{Type: "tool_result", Name: skipped.Name, Content: skipRes})
+						if a.CurrentModel.ToolMode == "native" {
+							a.History = append(a.History, llm.Message{Role: "tool", Content: skipRes, TCID: skipped.Id})
+						} else {
+							a.History = append(a.History, llm.Message{Role: "tool", Content: fmt.Sprintf("Tool result for %s:\n%s", skipped.Name, skipRes), TCID: skipped.Id})
+						}
+						if err := db.SaveMessage(a.SessionID, a.History[len(a.History)-1]); err != nil {
+							logger.Printf("SaveMessage failed: %v", err)
+						}
+					}
+					// inject rejection guidance as a user message and retry
+					userMsg := tools.SilentRejectMessage
+					if rej.Reason != "" {
+						userMsg = rej.Reason
+					}
+					a.History = append(a.History, llm.Message{Role: "user", Content: userMsg})
+					if err := db.SaveMessage(a.SessionID, a.History[len(a.History)-1]); err != nil {
+						logger.Printf("SaveMessage failed: %v", err)
+					}
+					rejected = true
+					break
+				}
 				if dispatchErr != nil {
 					res = "tool error: " + dispatchErr.Error()
 				} else if tc.Name == "ask_user" {
@@ -492,6 +529,9 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 			if a.Budget > 0 && a.SessionCost >= a.Budget {
 				return "", errors.New("budget exceeded during tool execution sequence")
 			}
+		}
+		if rejected {
+			continue
 		}
 	}
 	return "", errors.New("Max iterations exceeded")

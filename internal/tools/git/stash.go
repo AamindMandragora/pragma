@@ -1,11 +1,28 @@
 package git
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/AamindMandragora/pragma/internal/tools"
+)
 
 type StashTool struct{ gitTool }
 
 func NewStashTool() *StashTool {
-	return &StashTool{gitTool{name: "git_stash", description: "Pushes or pops git stash entries", schema: json.RawMessage(`{"type":"object","properties":{"action":{"type":"string"},"message":{"type":"string"}},"required":["action"]}`)}}
+	return &StashTool{gitTool{name: "git_stash", description: "Pushes or pops git stash entries", schema: json.RawMessage(`{"type":"object","properties":{"action":{"type":"string"},"message":{"type":"string"}},"required":["action"]}`), access: tools.AccessWrite}}
+}
+
+func (t *StashTool) ConfirmSummary(args json.RawMessage) string {
+	var params struct {
+		Action  string `json:"action"`
+		Message string `json:"message,omitempty"`
+	}
+	_ = json.Unmarshal(args, &params)
+	if params.Message != "" {
+		return fmt.Sprintf("git stash %s (%s)", params.Action, params.Message)
+	}
+	return fmt.Sprintf("git stash %s", params.Action)
 }
 
 func (t *StashTool) Execute(args json.RawMessage) (string, error) {

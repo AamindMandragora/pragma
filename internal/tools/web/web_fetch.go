@@ -7,12 +7,18 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
 type WebFetchTool struct{}
 
 func (w WebFetchTool) Name() string {
 	return "web_fetch"
+}
+
+func (w WebFetchTool) Access() tools.AccessLevel {
+	return tools.AccessRead
 }
 
 func (w WebFetchTool) Description() string {
