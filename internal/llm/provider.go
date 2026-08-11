@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+
+	"github.com/AamindMandragora/pragma/internal/llm/catalog"
 )
 
 // holds the id, name of tool, and args that the llm called with
@@ -25,9 +27,10 @@ type ToolDef struct {
 
 // tracks the number of input/output tokens from/to a model
 type TokenUsage struct {
-	InputTokens  int
-	OutputTokens int
-	Model        string
+	InputTokens       int
+	CachedInputTokens int
+	OutputTokens      int
+	Model             string
 }
 
 // this is the packet the model actually returns
@@ -79,30 +82,51 @@ type ModelTier struct {
 	Threshold float64
 }
 
-// will return a chatprovider by attemtping to read the apikey and using the provider-specific struct
+// will return a chatprovider by attempting to read the apikey and using the catalog-resolved provider
 func MakeProvider(providerName string, apiKeyVar string) ChatProvider {
-	key := readKey(apiKeyVar)
+	resolved, err := catalog.ResolveProvider(providerName)
+	if err != nil {
+		// unknown providers fall back to openrouter-compatible defaults when present
+		if fallback, ferr := catalog.ResolveProvider("openrouter"); ferr == nil {
+			resolved = fallback
+			resolved.Name = providerName
+		} else {
+			resolved = catalog.ResolvedProvider{
+				Name:         providerName,
+				Protocol:     "openai",
+				BaseURL:      "https://openrouter.ai/api/v1",
+				EndpointPath: "responses",
+				AuthHeader:   "Authorization",
+				AuthPrefix:   "Bearer ",
+				Headers:      map[string]string{"Content-Type": "application/json"},
+				ToolMode:     "text",
+			}
+		}
+	}
+	keyVar := apiKeyVar
+	if keyVar == "" {
+		keyVar = resolved.APIKeyVar
+	}
+	key := readKey(keyVar)
 	base := BaseProvider{Name: providerName, APIKey: key}
-	switch providerName {
+	switch resolved.Protocol {
 	case "anthropic":
-		return &AnthropicProvider{BaseProvider: base}
-	case "openai":
-		return &OpenAIProvider{BaseProvider: base, BaseURL: "https://api.openai.com/v1"}
-	case "openrouter":
-		return &OpenAIProvider{BaseProvider: base, BaseURL: "https://openrouter.ai/api/v1"}
+		return &AnthropicProvider{BaseProvider: base, Config: resolved}
 	default:
-		return &OpenAIProvider{BaseProvider: base, BaseURL: "https://openrouter.ai/api/v1"}
+		return &OpenAIProvider{BaseProvider: base, Config: resolved}
 	}
 }
 
 // openai and anthropic models support native tool calls, but we'll assume text in other cases
 func ToolModeForProvider(provider string) string {
-	switch provider {
-	case "openai", "anthropic":
-		return "native"
-	default:
+	resolved, err := catalog.ResolveProvider(provider)
+	if err != nil {
 		return "text"
 	}
+	if resolved.ToolMode != "" {
+		return resolved.ToolMode
+	}
+	return "text"
 }
 
 // function to get the value for a environment variable

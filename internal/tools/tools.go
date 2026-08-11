@@ -21,10 +21,12 @@ type ConfirmableTool interface {
 	ConfirmSummary(args json.RawMessage) string
 }
 
-// registry holds the tools and a confirm function
+// registry holds the tools and interactive callbacks for the TUI
 type Registry struct {
 	Tools   map[string]Tool
 	Confirm func(toolName string, summary string) bool
+	// AskUser pauses execution and returns the user's free-text answer
+	AskUser func(tried []string, problem, question string) string
 }
 
 // creates a new registry
@@ -52,6 +54,21 @@ func (r *Registry) Dispatch(name string, args json.RawMessage) (string, error) {
 	tool, ok := r.Tools[name]
 	if !ok {
 		return "", errors.New("Tool not found")
+	}
+	// ask_user blocks on the TUI callback rather than Execute
+	if name == "ask_user" {
+		var params struct {
+			Tried    []string `json:"tried"`
+			Problem  string   `json:"problem"`
+			Question string   `json:"question"`
+		}
+		if err := json.Unmarshal(args, &params); err != nil {
+			return "", err
+		}
+		if r.AskUser == nil {
+			return "ask_user is not available in this context", nil
+		}
+		return r.AskUser(params.Tried, params.Problem, params.Question), nil
 	}
 	// checks if it needs confirmation
 	if ct, ok := tool.(ConfirmableTool); ok {

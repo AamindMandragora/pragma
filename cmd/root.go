@@ -151,6 +151,7 @@ func launchTUI() {
 		registry.Register(tool)
 	}
 	registry.Register(&tools.WebFetchTool{})
+	registry.Register(&tools.AskUserTool{})
 	// passes the manager to the run command tools
 	registry.Register(&exectools.RunCommandTool{Manager: manager})
 	registry.Register(&exectools.RunPythonTool{Manager: manager})

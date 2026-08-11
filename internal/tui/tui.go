@@ -12,6 +12,7 @@ import (
 
 	"github.com/AamindMandragora/pragma/internal/agent"
 	"github.com/AamindMandragora/pragma/internal/db"
+	"github.com/AamindMandragora/pragma/internal/llm/catalog"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea" // bubbletea is what allows us to create our tui and it's industry standard
@@ -87,6 +88,13 @@ type confirmMessage struct {
 	command string
 }
 
+// askUserMessage holds the structured ask_user prompt for the TUI
+type askUserMessage struct {
+	tried    []string
+	problem  string
+	question string
+}
+
 // hashCommandMsg asks Update to run a hash command (used by menu selections)
 type hashCommandMsg struct {
 	cmd string
@@ -112,6 +120,11 @@ type TUIModel struct {
 	confirming   bool
 	confirmCmd   string
 	confirmChan  chan bool
+	asking       bool
+	askTried     []string
+	askProblem   string
+	askQuestion  string
+	askChan      chan string
 	state        TUIState
 	onboardStep  int
 	onboardData  map[string]string
@@ -207,7 +220,7 @@ func (t *TUIModel) updateViewportContent() {
 			b.WriteString("\n")
 		}
 	}
-	if t.streaming {
+	if t.streaming && !t.asking {
 		b.WriteString(dimStyle.Render("  thinking..."))
 		b.WriteString("\n\n")
 	}
@@ -215,6 +228,47 @@ func (t *TUIModel) updateViewportContent() {
 		b.WriteString(toolStyle.Render("  ⚡ Run command: " + t.confirmCmd))
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("  allow? [y/n]"))
+		b.WriteString("\n\n")
+	}
+	if t.asking {
+		b.WriteString(agentStyle.Render("  ◆ Pragma needs your input"))
+		b.WriteString("\n\n")
+		if len(t.askTried) > 0 {
+			b.WriteString(dimStyle.Render("  Tried:"))
+			b.WriteString("\n")
+			for _, item := range t.askTried {
+				wrapped := wrap(item, t.width-6)
+				for i, line := range strings.Split(wrapped, "\n") {
+					if i == 0 {
+						b.WriteString("  • ")
+					} else {
+						b.WriteString("    ")
+					}
+					b.WriteString(line)
+					b.WriteString("\n")
+				}
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString(dimStyle.Render("  Problem:"))
+		b.WriteString("\n")
+		wrapped := wrap(t.askProblem, t.width-4)
+		for _, line := range strings.Split(wrapped, "\n") {
+			b.WriteString("  ")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(toolStyle.Render("  Question:"))
+		b.WriteString("\n")
+		wrapped = wrap(t.askQuestion, t.width-4)
+		for _, line := range strings.Split(wrapped, "\n") {
+			b.WriteString("  ")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  type your answer and press Enter"))
 		b.WriteString("\n\n")
 	}
 	t.viewport.SetContent(b.String())
@@ -452,19 +506,21 @@ func (t *TUIModel) updateOnboarding(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch t.onboardStep {
 			// selects a provider
 			case 0, 4:
+				provider := "openrouter"
 				switch val {
 				case "2":
-					t.onboardData["provider"] = "openai"
-					t.onboardData["api_key_var"] = "OPENAI_API_KEY"
-					t.onboardData["default_model"] = "gpt-5.4-mini"
+					provider = "openai"
 				case "3":
-					t.onboardData["provider"] = "anthropic"
-					t.onboardData["api_key_var"] = "ANTHROPIC_API_KEY"
-					t.onboardData["default_model"] = "claude-3-5-sonnet-latest"
-				default:
-					t.onboardData["provider"] = "openrouter"
-					t.onboardData["api_key_var"] = "OPENROUTER_API_KEY"
-					t.onboardData["default_model"] = "qwen/qwen3-coder:free"
+					provider = "anthropic"
+				}
+				t.onboardData["provider"] = provider
+				t.onboardData["api_key_var"] = catalog.APIKeyVarForProvider(provider)
+				t.onboardData["default_model"] = catalog.DefaultModelForProvider(provider)
+				if t.onboardData["api_key_var"] == "" {
+					t.onboardData["api_key_var"] = strings.ToUpper(provider) + "_API_KEY"
+				}
+				if t.onboardData["default_model"] == "" {
+					t.onboardData["default_model"] = "gpt-5.4-mini"
 				}
 				t.onboardStep++
 				t.input.Placeholder = "Model name [" + t.onboardData["default_model"] + "]"
@@ -559,6 +615,20 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return t, tea.Quit
 		case "enter":
+			// answer an ask_user prompt without starting a new agent run
+			if t.asking {
+				val := strings.TrimSpace(t.input.Value())
+				if val == "" {
+					return t, nil
+				}
+				t.input.SetValue("")
+				t.asking = false
+				t.input.Placeholder = "Ask pragma..."
+				t.messages = append(t.messages, Message{Role: "user", Content: val})
+				t.updateViewportContent()
+				t.askChan <- val
+				return t, nil
+			}
 			if t.streaming {
 				break
 			}
@@ -640,6 +710,14 @@ func (t *TUIModel) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case confirmMessage:
 		t.confirming = true
 		t.confirmCmd = msg.command
+		t.updateViewportContent()
+		return t, nil
+	case askUserMessage:
+		t.asking = true
+		t.askTried = msg.tried
+		t.askProblem = msg.problem
+		t.askQuestion = msg.question
+		t.input.Placeholder = "Answer Pragma's question..."
 		t.updateViewportContent()
 		return t, nil
 	case hashCommandMsg:
@@ -871,6 +949,7 @@ func Start(a *agent.Agent) {
 
 	// channel that holds the confirm events
 	confirmChan := make(chan bool)
+	askChan := make(chan string)
 
 	// if a nil model was passed in we're onboarding otherwise chatting
 	state := StateChat
@@ -888,6 +967,7 @@ func Start(a *agent.Agent) {
 		viewport:     vp,
 		width:        80,
 		confirmChan:  confirmChan,
+		askChan:      askChan,
 		state:        state,
 		onboardData:  make(map[string]string),
 		onboardTiers: []map[string]string{},
@@ -925,6 +1005,10 @@ func Start(a *agent.Agent) {
 		a.Registry.Confirm = func(toolName string, summary string) bool {
 			p.Send(confirmMessage{command: fmt.Sprintf("[%s] %s", toolName, summary)})
 			return <-confirmChan
+		}
+		a.Registry.AskUser = func(tried []string, problem, question string) string {
+			p.Send(askUserMessage{tried: tried, problem: problem, question: question})
+			return <-askChan
 		}
 		// whenever the agent emits an event, if it's a tool call, send the tool message to the tui
 		a.OnEvent = func(event agent.AgentEvent) {
