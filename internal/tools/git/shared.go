@@ -50,16 +50,6 @@ func runGit(args ...string) (string, error) {
 	return output, err
 }
 
-func truncate(output string, err error) (string, error) {
-	if err != nil {
-		return output, err
-	}
-	if len(output) > 12000 {
-		return output[:12000] + "\n...truncated...", nil
-	}
-	return output, nil
-}
-
 func required(name, value string) error {
 	if value == "" {
 		return fmt.Errorf("%s is required", name)

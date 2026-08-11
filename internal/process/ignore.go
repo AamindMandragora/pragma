@@ -9,7 +9,7 @@ import (
 )
 
 var ignoredPatterns = []string{
-	".env",
+	".agent/.env",
 	".agent/config.toml",
 	".agent/pragma.db",
 	".agent/pragma.log",

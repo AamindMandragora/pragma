@@ -13,6 +13,7 @@ type TierConfig struct {
 	ApiKeyVarName string  `toml:"api_key_var_name"`
 	Temperature   float64 `toml:"temperature"`
 	MaxTokens     int     `toml:"max_tokens"`
+	Effort        string  `toml:"effort"`
 	Threshold     float64 `toml:"threshold"`
 }
 
@@ -21,13 +22,14 @@ type ModelConfig struct {
 	Tiers []TierConfig `toml:"tiers"`
 }
 
-// holds the desired output behavior of the model (UNUSED)
+// holds the desired output behavior of the model
 type BehaviorConfig struct {
-	Verbosity  string `toml:"verbosity"`
-	TestPolicy string `toml:"test_policy"`
+	Verbosity       string `toml:"verbosity"`
+	TestPolicy      string `toml:"test_policy"`
+	MaxOutputTokens int    `toml:"max_output_tokens"`
 }
 
-// holds the desired input behavior of the model (UNUSED)
+// holds the desired input behavior of the model
 type ContextConfig struct {
 	MaxInputTokens int    `toml:"max_input_tokens"`
 	Dependency     string `toml:"dependency"`
@@ -38,14 +40,6 @@ type Config struct {
 	Model    ModelConfig    `toml:"model"`
 	Behavior BehaviorConfig `toml:"behavior"`
 	Context  ContextConfig  `toml:"context"`
-}
-
-// local pointer to config
-var cfg *Config
-
-// config getter
-func Get() *Config {
-	return cfg
 }
 
 // loads the config from .agents/config.toml
@@ -62,15 +56,16 @@ func Load() (*Config, error) {
 		Tiers: []TierConfig{tier},
 	}
 	var behavior = BehaviorConfig{
-		Verbosity:  "minimal",
-		TestPolicy: "none",
+		Verbosity:       "minimal",
+		TestPolicy:      "none",
+		MaxOutputTokens: 8192,
 	}
 	var context = ContextConfig{
-		MaxInputTokens: 4096,
+		MaxInputTokens: 24000,
 		Dependency:     "main",
 	}
 	// creates a config using the defaults
-	cfg = &Config{
+	cfg := &Config{
 		Model:    model,
 		Behavior: behavior,
 		Context:  context,

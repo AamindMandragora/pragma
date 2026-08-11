@@ -13,6 +13,7 @@ import (
 var db *sql.DB
 
 // all sql files in internal/db/migrations/ will be baked into the executable
+//
 //go:embed migrations/*.sql
 var migrations embed.FS
 
@@ -20,11 +21,14 @@ var migrations embed.FS
 func Connect() error {
 	// attempts to create the .agent/ directory
 	var err = os.MkdirAll(".agent", 0755)
-	if err != nil { 
+	if err != nil {
 		return err
 	}
-	// opens .agent/pragma.db, creating if necessary
-	db, err = sql.Open("sqlite", ".agent/pragma.db")
+	// opens .agent/pragma.db, creating if necessary. foreign_keys is off by default in sqlite
+	// and is a per-connection setting, so it goes in the dsn rather than a one-off PRAGMA:
+	// database/sql pools connections and would only apply it to whichever one ran the exec.
+	// without it every ON DELETE CASCADE in the schema is silently ignored
+	db, err = sql.Open("sqlite", ".agent/pragma.db?_pragma=foreign_keys(1)")
 	if err != nil {
 		return err
 	}
@@ -52,7 +56,7 @@ func Migrate() error {
 		err = db.QueryRow("SELECT version FROM schema_migrations WHERE version = ?", entry.Name()).Scan(&v)
 		// if the file wasn't run then we run it and insert into schema_migrations
 		if err == sql.ErrNoRows {
-			var bytes, err = fs.ReadFile(migrations, "migrations/" + entry.Name())
+			var bytes, err = fs.ReadFile(migrations, "migrations/"+entry.Name())
 			if err != nil {
 				return err
 			}
@@ -67,9 +71,4 @@ func Migrate() error {
 		}
 	}
 	return nil
-}
-
-// database getter function
-func DB() *sql.DB {
-	return db
 }

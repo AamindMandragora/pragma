@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,98 +8,138 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/AamindMandragora/pragma/internal/llm/catalog"
 )
 
-// this provider can be used for openai and openrouter, which is why we need to hold the base url
+// this provider can be used for openai and openrouter, which is why we need to hold the resolved catalog config
 type OpenAIProvider struct {
 	BaseProvider
-	BaseURL string
+	Config catalog.ResolvedProvider
 }
 
-// the chunk that openai will return, to be converted to our internal format
-type openAIChunk struct {
-	Choices []struct {
-		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
-				Index    int    `json:"index"`
-				ID       string `json:"id"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"delta"`
-	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage"`
-	Model string `json:"model"`
+// streaming event from the Responses API (typed SSE payloads)
+type openAIStreamEvent struct {
+	Type string `json:"type"`
+
+	Delta string `json:"delta"`
+	Text  string `json:"text"`
+
+	// present on response.output_item.added / .done
+	Item *struct {
+		ID      string `json:"id"`
+		Type    string `json:"type"`
+		Status  string `json:"status"`
+		CallID  string `json:"call_id"`
+		Name    string `json:"name"`
+		Args    string `json:"arguments"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"item"`
+
+	OutputIndex int `json:"output_index"`
+
+	// present on response.function_call_arguments.done
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+
+	// present on response.completed / response.failed
+	Response *struct {
+		Model  string `json:"model"`
+		Status string `json:"status"`
+		Error  *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		Usage *struct {
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
+			InputTokensDetails *struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
+		} `json:"usage"`
+		IncompleteDetails *struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
+	} `json:"response"`
+
+	// present on top-level error events
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 // sends the message history and tool definitions to the model through provider, receives a StreamEvent
 func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []ToolDef, model Model) (<-chan StreamEvent, error) {
-	// creates the map for the body of our request
-	bodyMap := map[string]interface{}{
-		"model":                 model.Name,
-		"messages":              o.toAPIMessages(messages),
-		"stream":                true,
-		"max_completion_tokens": model.MaxTokens,
-		"temperature":           model.Temperature,
-		"stream_options":        map[string]interface{}{"include_usage": true},
+	instructions, input := o.toAPIInput(messages)
+	logical := map[string]interface{}{
+		"model":        model.Name,
+		"input":        input,
+		"stream":       true,
+		"max_tokens":   model.MaxTokens,
+		"temperature":  model.Temperature,
+		"instructions": instructions,
 	}
-	// adds ToolDefs to the body if we're using any
+	if model.Effort != "" {
+		logical["reasoning"] = map[string]string{
+			"effort": model.Effort,
+		}
+	}
 	if len(tools) > 0 {
-		bodyMap["tools"] = o.toAPITools(tools)
+		logical["tools"] = o.toAPITools(tools)
 	}
-	// encodes bodyMap into json
+	bodyMap := o.Config.BuildBody(logical)
 	body, err := json.Marshal(bodyMap)
 	if err != nil {
 		return nil, err
 	}
-	// converts the url string ot a url object
-	u, err := url.Parse(o.BaseURL)
+	u, err := url.Parse(o.Config.BaseURL)
 	if err != nil {
 		return nil, err
 	}
-	// creates the api url by adding chat/completions to the end
-	apiURL := u.JoinPath("chat/completions").String()
-	// creates http request to the api url, creates and passes in an io.Reader for the body, uses context to control the request and prevent leaks
+	apiURL := u.JoinPath(o.Config.EndpointPath).String()
 	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	// gives the request a header holding the auth key and the content type
-	req.Header.Set("Authorization", "Bearer "+o.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-	// creates a channel (go version of pipe) for the caller to read StreamEvents from
+	o.applyHeaders(req)
 	ch := make(chan StreamEvent)
-	// starts a goroutine
 	go func() {
-		// ensures that no matter what the channel will get closed at the end of the goroutine (will become read-only since there's a reader)
 		defer close(ch)
-		// sends the http request and any error that happens
 		res, err := http.DefaultClient.Do(req)
 		if err != nil {
 			ch <- StreamEvent{Type: "error", Err: err}
 			return
 		}
-		// ensures that the io.Reader for the body gets closed at the end of the goroutine
 		defer res.Body.Close()
-		// if http status is non-ok then send an error event
 		if res.StatusCode != http.StatusOK {
 			buf := new(bytes.Buffer)
 			buf.ReadFrom(res.Body)
 			ch <- StreamEvent{
 				Type: "error",
-				Err:  fmt.Errorf("%s returned status %d: %s", o.BaseURL, res.StatusCode, buf.String()),
+				Err:  fmt.Errorf("%s returned status %d: %s", o.Config.BaseURL, res.StatusCode, buf.String()),
 			}
 			return
 		}
-		scanner := bufio.NewScanner(res.Body)
-		toolCalls := map[int]*ToolCall{}
-		// reads each line of the response body
+		scanner := NewStreamScanner(res.Body)
+		type toolCallInProgress struct {
+			id   string
+			name string
+			args strings.Builder
+		}
+		toolCalls := map[int]*toolCallInProgress{}
+		evText := o.Config.Event("text_delta")
+		evTextDone := o.Config.Event("text_done")
+		evToolAdded := o.Config.Event("tool_item_added")
+		evArgsDelta := o.Config.Event("tool_args_delta")
+		evArgsDone := o.Config.Event("tool_args_done")
+		evCompleted := o.Config.Event("completed")
+		evFailed := o.Config.Event("failed")
+		evError := o.Config.Event("error")
+		terminal := false
+		textReceived := false
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line == "" || line == "data: [DONE]" {
@@ -109,81 +148,204 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 			if !strings.HasPrefix(line, "data: ") {
 				continue
 			}
-			// gets the value of the data field
 			data := strings.TrimPrefix(line, "data: ")
-			// attempts to fill in the chunk with that string
-			var chunk openAIChunk
-			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			var event openAIStreamEvent
+			if err := json.Unmarshal([]byte(data), &event); err != nil {
 				continue
 			}
-			// if chunk holds usage info then send that event
-			if chunk.Usage != nil {
-				ch <- StreamEvent{Type: "usage", Usage: &TokenUsage{InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens, Model: chunk.Model}}
-			}
-			// if chunk held no choices for response then continue
-			if len(chunk.Choices) == 0 {
-				continue
-			}
-			// we'll always use the first choice, send the content through a StreamEvent
-			if chunk.Choices[0].Delta.Content != "" {
-				ch <- StreamEvent{Type: "text", Text: chunk.Choices[0].Delta.Content}
-			}
-			// loop through all the tool calls
-			for _, tc := range chunk.Choices[0].Delta.ToolCalls {
-				// if we already have this tool call stored then append the arguments, otherwise create a new tool call and store it in our map
-				existing, ok := toolCalls[tc.Index]
-				if !ok {
-					toolCalls[tc.Index] = &ToolCall{Id: tc.ID, Name: tc.Function.Name, Args: json.RawMessage(tc.Function.Arguments)}
-				} else {
-					existing.Args = json.RawMessage(string(existing.Args) + tc.Function.Arguments)
+			switch event.Type {
+			case evText:
+				if event.Delta != "" {
+					textReceived = true
+					ch <- StreamEvent{Type: "text", Text: event.Delta}
 				}
+			case evTextDone:
+				// Some OpenAI-compatible endpoints send only the completed text
+				// event. Avoid duplicating it when deltas were already received.
+				if event.Text != "" && !textReceived {
+					ch <- StreamEvent{Type: "text", Text: event.Text}
+				}
+			case evToolAdded:
+				if event.Item != nil && event.Item.Type == "function_call" {
+					toolCalls[event.OutputIndex] = &toolCallInProgress{
+						id:   event.Item.CallID,
+						name: event.Item.Name,
+					}
+				}
+			case evArgsDelta:
+				if tc, ok := toolCalls[event.OutputIndex]; ok {
+					tc.args.WriteString(event.Delta)
+				}
+			case evArgsDone:
+				tc, ok := toolCalls[event.OutputIndex]
+				if !ok {
+					tc = &toolCallInProgress{}
+					toolCalls[event.OutputIndex] = tc
+				}
+				if event.CallID != "" {
+					tc.id = event.CallID
+				}
+				if event.Name != "" {
+					tc.name = event.Name
+				}
+				if event.Arguments != "" {
+					tc.args.Reset()
+					tc.args.WriteString(event.Arguments)
+				}
+			case evCompleted:
+				terminal = true
+				if event.Response != nil && event.Response.Status != "" && event.Response.Status != "completed" {
+					reason := event.Response.Status
+					if event.Response.IncompleteDetails != nil && event.Response.IncompleteDetails.Reason != "" {
+						reason = event.Response.IncompleteDetails.Reason
+					}
+					ch <- StreamEvent{Type: "error", Err: fmt.Errorf("model response incomplete (%s); context or output limits may have been reached", reason)}
+					return
+				}
+				if event.Response != nil && event.Response.Usage != nil {
+					usageModel := event.Response.Model
+					if usageModel == "" {
+						usageModel = model.Name
+					}
+					cached := 0
+					if event.Response.Usage.InputTokensDetails != nil {
+						cached = event.Response.Usage.InputTokensDetails.CachedTokens
+					}
+					ch <- StreamEvent{
+						Type: "usage",
+						Usage: &TokenUsage{
+							InputTokens:       event.Response.Usage.InputTokens,
+							CachedInputTokens: cached,
+							OutputTokens:      event.Response.Usage.OutputTokens,
+							Model:             usageModel,
+						},
+					}
+				}
+			case evFailed:
+				terminal = true
+				msg := "response failed"
+				if event.Response != nil && event.Response.Error != nil && event.Response.Error.Message != "" {
+					msg = event.Response.Error.Message
+				}
+				ch <- StreamEvent{Type: "error", Err: fmt.Errorf("%s", msg)}
+				return
+			case evError:
+				terminal = true
+				msg := event.Message
+				if msg == "" {
+					msg = "stream error"
+				}
+				ch <- StreamEvent{Type: "error", Err: fmt.Errorf("%s", msg)}
+				return
 			}
 		}
-		// check if the scanner failed, return an error if so
 		if err := scanner.Err(); err != nil {
-			ch <- StreamEvent{Type: "error", Err: err}
+			ch <- StreamEvent{Type: "error", Err: fmt.Errorf("OpenAI response stream: %w", err)}
 			return
 		}
-		// send tool call events through the channel
-		for _, tc := range toolCalls {
-			ch <- StreamEvent{Type: "tool_call", TC: tc}
+		if !terminal {
+			ch <- StreamEvent{Type: "error", Err: fmt.Errorf("model stream ended before completion; context or output limits may have been reached")}
+			return
 		}
-		// send done event to signify no more messages
+		maxIdx := -1
+		for idx := range toolCalls {
+			if idx > maxIdx {
+				maxIdx = idx
+			}
+		}
+		for i := 0; i <= maxIdx; i++ {
+			tc, ok := toolCalls[i]
+			if !ok {
+				continue
+			}
+			args := tc.args.String()
+			if args == "" {
+				args = "{}"
+			}
+			if !json.Valid([]byte(args)) {
+				ch <- StreamEvent{Type: "error", Err: fmt.Errorf("model returned incomplete arguments for %s", tc.name)}
+				return
+			}
+			ch <- StreamEvent{
+				Type: "tool_call",
+				TC: &ToolCall{
+					Id:   tc.id,
+					Name: tc.name,
+					Args: json.RawMessage(args),
+				},
+			}
+		}
 		ch <- StreamEvent{Type: "done"}
 	}()
-	// return the channel (now read-only) and a nil error
 	return ch, nil
 }
 
-// converts our internal message storage to what openai expects
-func (o *OpenAIProvider) toAPIMessages(messages []Message) []map[string]interface{} {
-	var m []map[string]interface{}
-	// loops through each message, converts format, and adds to the map
-	for _, message := range messages {
-		switch message.Role {
-		case "tool":
-			// adds the result of a tool call
-			m = append(m, map[string]interface{}{"role": "tool", "tool_call_id": message.TCID, "content": message.Content})
-		case "assistant":
-			// adds tool calls and messages made by the assistant
-			var tcs []map[string]interface{}
-			for _, tc := range message.TCs {
-				tcs = append(tcs, map[string]interface{}{"id": tc.Id, "type": "function", "function": map[string]interface{}{"name": tc.Name, "arguments": string(tc.Args)}})
-			}
-			m = append(m, map[string]interface{}{"role": "assistant", "content": message.Content, "tool_calls": tcs})
-		default:
-			// for other cases role and content will suffice
-			m = append(m, map[string]interface{}{"role": message.Role, "content": message.Content})
-		}
+func (o *OpenAIProvider) applyHeaders(req *http.Request) {
+	for k, v := range o.Config.Headers {
+		req.Header.Set(k, v)
 	}
-	return m
+	if o.Config.AuthHeader != "" {
+		req.Header.Set(o.Config.AuthHeader, o.Config.AuthPrefix+o.APIKey)
+	}
 }
 
-// converts the internal tool representation to what openai expects
+// converts our internal message history to Responses API instructions + input items
+func (o *OpenAIProvider) toAPIInput(messages []Message) (string, []map[string]interface{}) {
+	var instructions string
+	var input []map[string]interface{}
+	for _, message := range messages {
+		switch message.Role {
+		case "system":
+			if len(input) == 0 && instructions == "" {
+				instructions = message.Content
+			} else if len(input) == 0 {
+				instructions = instructions + "\n\n" + message.Content
+			} else {
+				input = append(input, map[string]interface{}{"role": "developer", "content": message.Content})
+			}
+		case "tool":
+			input = append(input, map[string]interface{}{
+				"type":    "function_call_output",
+				"call_id": message.TCID,
+				"output":  message.Content,
+			})
+		case "assistant":
+			if message.Content != "" {
+				input = append(input, map[string]interface{}{"role": "assistant", "content": message.Content})
+			}
+			for _, tc := range message.TCs {
+				args := string(tc.Args)
+				if args == "" {
+					args = "{}"
+				}
+				input = append(input, map[string]interface{}{
+					"type":      "function_call",
+					"call_id":   tc.Id,
+					"name":      tc.Name,
+					"arguments": args,
+				})
+			}
+		default:
+			input = append(input, map[string]interface{}{"role": message.Role, "content": message.Content})
+		}
+	}
+	return instructions, input
+}
+
+// converts the internal tool representation to what the Responses API expects
 func (o *OpenAIProvider) toAPITools(tools []ToolDef) []map[string]interface{} {
 	var m []map[string]interface{}
 	for _, tool := range tools {
-		m = append(m, map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": tool.Name, "description": tool.Description, "parameters": tool.InputSchema}})
+		var params interface{}
+		if len(tool.InputSchema) > 0 {
+			_ = json.Unmarshal(tool.InputSchema, &params)
+		}
+		m = append(m, map[string]interface{}{
+			"type":        "function",
+			"name":        tool.Name,
+			"description": tool.Description,
+			"parameters":  params,
+		})
 	}
 	return m
 }

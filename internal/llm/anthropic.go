@@ -1,27 +1,20 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
+
+	"github.com/AamindMandragora/pragma/internal/llm/catalog"
 )
 
 type AnthropicProvider struct {
 	BaseProvider
-}
-
-type anthropicRequest struct {
-	Model       string                   `json:"model"`
-	MaxTokens   int                      `json:"max_tokens"`
-	System      string                   `json:"system,omitempty"`
-	Messages    []map[string]interface{} `json:"messages"`
-	Stream      bool                     `json:"stream"`
-	Tools       []map[string]interface{} `json:"tools,omitempty"`
-	Temperature float64                  `json:"temperature"`
+	Config catalog.ResolvedProvider
 }
 
 type anthropicChunk struct {
@@ -30,8 +23,9 @@ type anthropicChunk struct {
 
 	Message *struct {
 		Usage *struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			InputTokens          int `json:"input_tokens"`
+			OutputTokens         int `json:"output_tokens"`
+			CacheReadInputTokens int `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	} `json:"message"`
 
@@ -45,6 +39,7 @@ type anthropicChunk struct {
 		Type        string `json:"type"`
 		Text        string `json:"text"`
 		PartialJSON string `json:"partial_json"`
+		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
 
 	Usage *struct {
@@ -55,30 +50,42 @@ type anthropicChunk struct {
 func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools []ToolDef, model Model) (<-chan StreamEvent, error) {
 	systemPrompt, apiMessages := a.splitSystem(messages)
 
-	reqBody := anthropicRequest{
-		Model:       model.Name,
-		MaxTokens:   model.MaxTokens,
-		System:      systemPrompt,
-		Messages:    apiMessages,
-		Stream:      true,
-		Temperature: model.Temperature,
+	logical := map[string]interface{}{
+		"model":      model.Name,
+		"max_tokens": model.MaxTokens,
+		"system":     systemPrompt,
+		"messages":   apiMessages,
+		"stream":     true,
+	}
+	// newer models (opus 5, opus 4.7/4.8, sonnet 5) reject temperature with a 400,
+	// older ones still take it, so the catalog decides per model
+	if entry, ok := catalog.LookupModel(model.Name); !ok || !entry.NoTemperature {
+		logical["temperature"] = model.Temperature
+	}
+	if model.Effort != "" {
+		logical["output_config"] = map[string]string{
+			"effort": model.Effort,
+		}
 	}
 	if len(tools) > 0 {
-		reqBody.Tools = a.toAPITools(tools)
+		logical["tools"] = a.toAPITools(tools)
 	}
-
-	body, err := json.Marshal(reqBody)
+	bodyMap := a.Config.BuildBody(logical)
+	body, err := json.Marshal(bodyMap)
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+	u, err := url.Parse(a.Config.BaseURL)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("x-api-key", a.APIKey)
-	req.Header.Set("content-type", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
+	apiURL := u.JoinPath(a.Config.EndpointPath).String()
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	a.applyHeaders(req)
 
 	ch := make(chan StreamEvent)
 	go func() {
@@ -99,8 +106,9 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 			return
 		}
 
-		scanner := bufio.NewScanner(res.Body)
+		scanner := NewStreamScanner(res.Body)
 		var inputTokens int
+		var cachedInputTokens int
 		var outputTokens int
 
 		type toolCallInProgress struct {
@@ -109,6 +117,13 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 			args strings.Builder
 		}
 		activeTools := map[int]*toolCallInProgress{}
+
+		evMsgStart := a.Config.Event("message_start")
+		evBlockStart := a.Config.Event("content_block_start")
+		evBlockDelta := a.Config.Event("content_block_delta")
+		evBlockStop := a.Config.Event("content_block_stop")
+		evMsgDelta := a.Config.Event("message_delta")
+		evMsgStop := a.Config.Event("message_stop")
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -126,12 +141,13 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 			}
 
 			switch event.Type {
-			case "message_start":
+			case evMsgStart:
 				if event.Message != nil && event.Message.Usage != nil {
 					inputTokens = event.Message.Usage.InputTokens
+					cachedInputTokens = event.Message.Usage.CacheReadInputTokens
 				}
 
-			case "content_block_start":
+			case evBlockStart:
 				if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
 					activeTools[event.Index] = &toolCallInProgress{
 						id:   event.ContentBlock.ID,
@@ -139,7 +155,7 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 					}
 				}
 
-			case "content_block_delta":
+			case evBlockDelta:
 				if event.Delta == nil {
 					continue
 				}
@@ -154,31 +170,43 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 					}
 				}
 
-			case "content_block_stop":
+			case evBlockStop:
 				if tc, ok := activeTools[event.Index]; ok {
+					// tools that take no arguments get no input_json_delta events at all,
+					// so the accumulated args are empty. keep it valid json or the tool call
+					// serializes back as "input": null and the next request 400s
+					args := strings.TrimSpace(tc.args.String())
+					if args == "" {
+						args = "{}"
+					}
 					ch <- StreamEvent{
 						Type: "tool_call",
 						TC: &ToolCall{
 							Id:   tc.id,
 							Name: tc.name,
-							Args: json.RawMessage(tc.args.String()),
+							Args: json.RawMessage(args),
 						},
 					}
 					delete(activeTools, event.Index)
 				}
 
-			case "message_delta":
+			case evMsgDelta:
+				if event.Delta != nil && event.Delta.StopReason == "max_tokens" {
+					ch <- StreamEvent{Type: "error", Err: fmt.Errorf("model response incomplete (max_tokens); context or output limits may have been reached")}
+					return
+				}
 				if event.Usage != nil {
 					outputTokens = event.Usage.OutputTokens
 				}
 
-			case "message_stop":
+			case evMsgStop:
 				ch <- StreamEvent{
 					Type: "usage",
 					Usage: &TokenUsage{
-						InputTokens:  inputTokens,
-						OutputTokens: outputTokens,
-						Model:        model.Name,
+						InputTokens:       inputTokens,
+						CachedInputTokens: cachedInputTokens,
+						OutputTokens:      outputTokens,
+						Model:             model.Name,
 					},
 				}
 				ch <- StreamEvent{Type: "done"}
@@ -186,10 +214,19 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			ch <- StreamEvent{Type: "error", Err: err}
+			ch <- StreamEvent{Type: "error", Err: fmt.Errorf("Anthropic response stream: %w", err)}
 		}
 	}()
 	return ch, nil
+}
+
+func (a *AnthropicProvider) applyHeaders(req *http.Request) {
+	for k, v := range a.Config.Headers {
+		req.Header.Set(k, v)
+	}
+	if a.Config.AuthHeader != "" {
+		req.Header.Set(a.Config.AuthHeader, a.Config.AuthPrefix+a.APIKey)
+	}
 }
 
 func (a *AnthropicProvider) splitSystem(messages []Message) (string, []map[string]interface{}) {
@@ -223,7 +260,11 @@ func (a *AnthropicProvider) splitSystem(messages []Message) (string, []map[strin
 				}
 				for _, tc := range msg.TCs {
 					var parsedArgs interface{}
-					json.Unmarshal(tc.Args, &parsedArgs)
+					// unparseable or absent args (zero-argument tools, older stored history)
+					// must still go out as an object, never null
+					if err := json.Unmarshal(tc.Args, &parsedArgs); err != nil || parsedArgs == nil {
+						parsedArgs = map[string]interface{}{}
+					}
 					content = append(content, map[string]interface{}{
 						"type":  "tool_use",
 						"id":    tc.Id,

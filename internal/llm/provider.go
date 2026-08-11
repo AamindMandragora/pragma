@@ -5,9 +5,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"strings"
+
+	"github.com/AamindMandragora/pragma/internal/llm/catalog"
 )
+
+const maxStreamLineSize = 16 * 1024 * 1024
+
+// NewStreamScanner handles SSE events that contain large tool arguments or
+// text deltas. bufio.Scanner's default token limit is only 64 KiB.
+func NewStreamScanner(reader io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 64*1024), maxStreamLineSize)
+	return scanner
+}
 
 // holds the id, name of tool, and args that the llm called with
 type ToolCall struct {
@@ -25,9 +38,10 @@ type ToolDef struct {
 
 // tracks the number of input/output tokens from/to a model
 type TokenUsage struct {
-	InputTokens  int
-	OutputTokens int
-	Model        string
+	InputTokens       int
+	CachedInputTokens int
+	OutputTokens      int
+	Model             string
 }
 
 // this is the packet the model actually returns
@@ -69,6 +83,7 @@ type Model struct {
 	Name        string
 	MaxTokens   int
 	Temperature float64
+	Effort      string
 	Provider    ChatProvider
 	ToolMode    string
 }
@@ -79,36 +94,61 @@ type ModelTier struct {
 	Threshold float64
 }
 
-// will return a chatprovider by attemtping to read the apikey and using the provider-specific struct
+// will return a chatprovider by attempting to read the apikey and using the catalog-resolved provider
 func MakeProvider(providerName string, apiKeyVar string) ChatProvider {
-	key := readKey(apiKeyVar)
+	resolved, err := catalog.ResolveProvider(providerName)
+	if err != nil {
+		// unknown providers fall back to openrouter-compatible defaults when present
+		if fallback, ferr := catalog.ResolveProvider("openrouter"); ferr == nil {
+			resolved = fallback
+			resolved.Name = providerName
+		} else {
+			resolved = catalog.ResolvedProvider{
+				Name:         providerName,
+				Protocol:     "openai",
+				BaseURL:      "https://openrouter.ai/api/v1",
+				EndpointPath: "responses",
+				AuthHeader:   "Authorization",
+				AuthPrefix:   "Bearer ",
+				Headers:      map[string]string{"Content-Type": "application/json"},
+				ToolMode:     "text",
+			}
+		}
+	}
+	keyVar := apiKeyVar
+	if keyVar == "" {
+		keyVar = resolved.APIKeyVar
+	}
+	key := readKey(keyVar)
 	base := BaseProvider{Name: providerName, APIKey: key}
-	switch providerName {
+	switch resolved.Protocol {
 	case "anthropic":
-		return &AnthropicProvider{BaseProvider: base}
-	case "openai":
-		return &OpenAIProvider{BaseProvider: base, BaseURL: "https://api.openai.com/v1"}
-	case "openrouter":
-		return &OpenAIProvider{BaseProvider: base, BaseURL: "https://openrouter.ai/api/v1"}
+		return &AnthropicProvider{BaseProvider: base, Config: resolved}
 	default:
-		return &OpenAIProvider{BaseProvider: base, BaseURL: "https://openrouter.ai/api/v1"}
+		return &OpenAIProvider{BaseProvider: base, Config: resolved}
 	}
 }
 
 // openai and anthropic models support native tool calls, but we'll assume text in other cases
 func ToolModeForProvider(provider string) string {
-	switch provider {
-	case "openai", "anthropic":
-		return "native"
-	default:
+	resolved, err := catalog.ResolveProvider(provider)
+	if err != nil {
 		return "text"
 	}
+	if resolved.ToolMode != "" {
+		return resolved.ToolMode
+	}
+	return "text"
 }
 
 // function to get the value for a environment variable
 func readKey(varName string) string {
-	// tries a local .env first
-	data, err := os.ReadFile(".env")
+	// tries .agent/.env first
+	data, err := os.ReadFile(".agent/.env")
+	// then tries local
+	if err != nil {
+		data, err = os.ReadFile(".env")
+	}
 	if err == nil {
 		// reads each line in the .env, che
 		scanner := bufio.NewScanner(bytes.NewReader(data))

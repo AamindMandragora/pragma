@@ -1,0 +1,116 @@
+{
+  "protocol": "anthropic",
+  "defaults": {
+    "endpoint_path": "messages",
+    "auth_header": "x-api-key",
+    "auth_prefix": "",
+    "headers": {
+      "Content-Type": "application/json",
+      "anthropic-version": "2023-06-01"
+    },
+    "tool_mode": "native",
+    "request": {
+      "model": "model",
+      "messages": "messages",
+      "system": "system",
+      "stream": "stream",
+      "max_tokens": "max_tokens",
+      "tools": "tools",
+      "output_config": "output_config",
+      "temperature": "temperature"
+    },
+    "stream_events": {
+      "message_start": "message_start",
+      "content_block_start": "content_block_start",
+      "content_block_delta": "content_block_delta",
+      "content_block_stop": "content_block_stop",
+      "message_delta": "message_delta",
+      "message_stop": "message_stop"
+    }
+  },
+  "providers": {
+    "anthropic": {
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key_var": "ANTHROPIC_API_KEY",
+      "default_model": "claude-sonnet-5"
+    }
+  },
+  "models": [
+    {
+      "id": "claude-opus-5",
+      "providers": ["anthropic"],
+      "pricing": { "input": 5.00, "cached_input": 0.50, "output": 25.00 },
+      "no_temperature": true,
+      "benchmarks": {}
+    },
+    {
+      "id": "claude-sonnet-5",
+      "providers": ["anthropic"],
+      "pricing": { "input": 2.00, "cached_input": 0.20, "output": 10.00 },
+      "no_temperature": true,
+      "benchmarks": {}
+    },
+    {
+      "id": "claude-opus-4-8",
+      "providers": ["anthropic"],
+      "pricing": { "input": 5.00, "cached_input": 0.50, "output": 25.00 },
+      "no_temperature": true,
+      "benchmarks": {}
+    },
+    {
+      "id": "claude-opus-4-7",
+      "providers": ["anthropic"],
+      "pricing": { "input": 5.00, "cached_input": 0.50, "output": 25.00 },
+      "no_temperature": true,
+      "benchmarks": {}
+    },
+    {
+      "id": "claude-opus-4-6",
+      "providers": ["anthropic"],
+      "pricing": { "input": 5.00, "cached_input": 0.50, "output": 25.00 },
+      "benchmarks": {}
+    },
+    {
+      "id": "claude-opus-4-5",
+      "providers": ["anthropic"],
+      "pricing": { "input": 5.00, "cached_input": 0.50, "output": 25.00 },
+      "benchmarks": {}
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "providers": ["anthropic"],
+      "pricing": { "input": 3.00, "cached_input": 0.30, "output": 15.00 },
+      "benchmarks": {}
+    },
+    {
+      "id": "claude-sonnet-4-5",
+      "providers": ["anthropic"],
+      "pricing": { "input": 3.00, "cached_input": 0.30, "output": 15.00 },
+      "benchmarks": {}
+    },
+    {
+      "id": "claude-haiku-4-5",
+      "providers": ["anthropic"],
+      "pricing": { "input": 1.00, "cached_input": 0.10, "output": 5.00 },
+      "benchmarks": {}
+    },
+    {
+      "id": "claude-3-5-sonnet-latest",
+      "providers": ["anthropic"],
+      "pricing": { "input": 3.00, "cached_input": 0.30, "output": 15.00 },
+      "benchmarks": {}
+    },
+    {
+      "id": "claude-3-5-haiku-latest",
+      "providers": ["anthropic"],
+      "pricing": { "input": 0.80, "cached_input": 0.08, "output": 4.00 },
+      "benchmarks": {}
+    },
+    {
+      "id": "claude-3-opus-latest",
+      "providers": ["anthropic"],
+      "pricing": { "input": 15.00, "cached_input": 1.50, "output": 75.00 },
+      "benchmarks": {}
+    }
+  ]
+}

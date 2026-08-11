@@ -1,83 +1,130 @@
 name: Release
 
-# auto triggers whenever we push a version tag
 on:
   push:
     tags: ['v*']
 
-# the name of our bundled c library
 env:
-    LIB_NAME: pragma_lib
+  LIB_NAME: pragma_lib
 
 jobs:
   build:
+    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
-      # list of job configs for each os and architecture
+      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            goos: linux
+          - goos: linux
             goarch: amd64
-            lib_cmd: gcc -shared -fPIC -o ${LIB_NAME}.so csrc/*.c -ldl
-            lib_name: ${LIB_NAME}.so
-          - os: ubuntu-latest
-            goos: linux
+            zig_target: x86_64-linux-gnu
+            lib_format: so
+          - goos: linux
             goarch: arm64
-            lib_cmd: aarch64-linux-gnu-gcc -shared -fPIC -o ${LIB_NAME}.so csrc/*.c -ldl
-            lib_name: ${LIB_NAME}.so
-          - os: macos-latest
-            goos: darwin
+            zig_target: aarch64-linux-gnu
+            lib_format: so
+          - goos: darwin
+            goarch: amd64
+            zig_target: x86_64-macos
+            lib_format: dylib
+          - goos: darwin
             goarch: arm64
-            lib_cmd: gcc -dynamiclib -o ${LIB_NAME}.dylib csrc/*.c -ldl
-            lib_name: ${LIB_NAME}.dylib
-          - os: macos-latest
-            goos: darwin
+            zig_target: aarch64-macos
+            lib_format: dylib
+          - goos: windows
             goarch: amd64
-            lib_cmd: gcc -target x86_64-apple-macos -dynamiclib -o ${LIB_NAME}.dylib csrc/*.c -ldl
-            lib_name: ${LIB_NAME}.dylib
-          - os: windows-latest
-            goos: windows
-            goarch: arm
-            lib_cmd: ""
-            lib_name: ""
-          - os: windows-latest
-            goos: windows
-            goarch: amd64
-            lib_cmd: ""
-            lib_name: ""
+            zig_target: ''
+            lib_format: ''
+          - goos: windows
+            goarch: arm64
+            zig_target: ''
+            lib_format: ''
 
-    # creates a build for each entry in the matrix
-    runs-on: ${{ matrix.os }}
     steps:
-      # checks out repo at given version and sets up go
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version-file: go.mod
 
-      # runs the os-specific build command for the c library
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
       - name: Build guard library
-        if: matrix.lib_cmd != ''
-        run: ${{ matrix.lib_cmd }}
+        if: matrix.zig_target != ''
+        env:
+          ZIG_TARGET: ${{ matrix.zig_target }}
+          LIB_FORMAT: ${{ matrix.lib_format }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$LIB_FORMAT" = "so" ]; then
+            zig cc -target "$ZIG_TARGET" -shared -fPIC -O2 \
+              -o "${LIB_NAME}.so" csrc/restrict_open.c -ldl
+          else
+            zig cc -target "$ZIG_TARGET" -dynamiclib -O2 \
+              -o "${LIB_NAME}.dylib" csrc/restrict_open.c
+          fi
 
-      # builds pragma executable according to the os and architecture
       - name: Build pragma
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: go build -o pragma${{ matrix.goos == 'windows' && '.exe' || '' }} .
-
-      # copies both into a distribution directory and compresses into a tarball
-      - name: Package
+          CGO_ENABLED: '0'
+        shell: bash
         run: |
-          mkdir -p dist
-          cp pragma* dist/ 2>/dev/null || true
-          if [ -f "${{ matrix.lib_name }}" ]; then 
-            cp "${{ matrix.lib_name }}" dist/
+          set -euo pipefail
+          suffix=""
+          if [ "$GOOS" = "windows" ]; then
+            suffix=".exe"
           fi
-          tar -czf pragma-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz -C dist .
+          go build -trimpath -ldflags='-s -w' -o "pragma${suffix}" .
 
-      # uploads tarball to the release
-      - uses: softprops/action-gh-release@v2
+      - name: Package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          LIB_FORMAT: ${{ matrix.lib_format }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist="dist/${GOOS}-${GOARCH}"
+          mkdir -p "$dist"
+          if [ "$GOOS" = "windows" ]; then
+            cp pragma.exe "$dist/"
+          else
+            cp pragma "$dist/"
+            cp "${LIB_NAME}.${LIB_FORMAT}" "$dist/"
+          fi
+          tar -czf "pragma-${GOOS}-${GOARCH}.tar.gz" -C "$dist" .
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
         with:
-          files: pragma-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+          name: pragma-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: pragma-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish release assets
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Attach packages to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
