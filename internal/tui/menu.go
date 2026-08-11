@@ -3,86 +3,134 @@ package tui
 import (
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
-// menuoption struct for each option
+// MenuOption is an entry in the command palette or help menu.
 type MenuOption struct {
 	Label       string
 	Description string
 	OnSelect    func() tea.Cmd
 }
 
-// the menu struct, containing all menu options and cursor location
+// Menu is deliberately small: it is a modal child model owned by the shell.
+// Keeping it independent means the command palette can later be replaced
+// without changing the timeline or agent lifecycle.
 type Menu struct {
-	Title   string
-	Options []MenuOption
-	Cursor  int
+	Title       string
+	Options     []MenuOption
+	Cursor      int
+	Offset      int
+	VisibleRows int
 }
 
 var (
-	selectedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("212")). // pinkish
-			Bold(true)
-	normalStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245")) // gray
-	descStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241")).
-			Italic(true)
+	selectedStyle = lipgloss.NewStyle().Foreground(colorPink).Bold(true)
+	normalStyle   = lipgloss.NewStyle().Foreground(colorText)
+	descStyle     = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 )
 
-// function for moving the cursor for each option in the menu
 func (m *Menu) Move(delta int) {
 	if len(m.Options) == 0 {
 		return
 	}
-	n := len(m.Options)
-	m.Cursor = (m.Cursor + delta + n) % n
+	m.Cursor = (m.Cursor + delta + len(m.Options)) % len(m.Options)
+	m.ensureCursorVisible()
 }
 
-// returns selected option
+func (m *Menu) SetVisibleRows(rows int) {
+	m.VisibleRows = max(1, rows)
+	m.ensureCursorVisible()
+}
+
+func (m *Menu) ensureCursorVisible() {
+	if len(m.Options) == 0 || m.VisibleRows <= 0 {
+		return
+	}
+	if m.Cursor < m.Offset {
+		m.Offset = m.Cursor
+	}
+	if m.Cursor >= m.Offset+m.VisibleRows {
+		m.Offset = m.Cursor - m.VisibleRows + 1
+	}
+	m.Offset = max(0, min(m.Offset, max(0, len(m.Options)-m.VisibleRows)))
+}
+
 func (m *Menu) Selected() *MenuOption {
-	if len(m.Options) == 0 {
+	if len(m.Options) == 0 || m.Cursor < 0 || m.Cursor >= len(m.Options) {
 		return nil
 	}
 	return &m.Options[m.Cursor]
 }
 
-func (m *Menu) HandleKey(msg tea.KeyMsg) (done bool, cmd tea.Cmd) {
-	switch msg.String() {
-	case "up", "left":
+func (m *Menu) HandleKey(msg tea.KeyPressMsg) (done bool, cmd tea.Cmd) {
+	switch keyName(msg) {
+	case "up", "alt+k":
 		m.Move(-1)
-	case "down", "right":
+	case "down", "alt+j":
 		m.Move(1)
+	case "pgup":
+		m.Move(-max(1, m.VisibleRows))
+	case "pgdown":
+		m.Move(max(1, m.VisibleRows))
+	case "home":
+		m.Cursor = 0
+		m.ensureCursorVisible()
+	case "end":
+		m.Cursor = len(m.Options) - 1
+		m.ensureCursorVisible()
 	case "enter":
-		if opt := m.Selected(); opt != nil && opt.OnSelect != nil {
-			return true, opt.OnSelect()
+		if option := m.Selected(); option != nil && option.OnSelect != nil {
+			return true, option.OnSelect()
 		}
 		return true, nil
-	case "esc":
+	case "esc", "alt+c":
 		return true, nil
 	}
 	return false, nil
 }
 
 func (m *Menu) View() string {
+	return m.ViewWindow(0)
+}
+
+// ViewWindow renders the menu's current window. A zero row count renders all
+// options, which keeps the small standalone Menu useful in tests and callers
+// that do not need a bounded view.
+func (m *Menu) ViewWindow(rows int) string {
 	var b strings.Builder
 	if m.Title != "" {
-		b.WriteString(lipgloss.NewStyle().Bold(true).Render(m.Title))
+		b.WriteString(lipgloss.NewStyle().Foreground(colorPurple).Bold(true).Render(m.Title))
 		b.WriteString("\n\n")
 	}
-	for i, opt := range m.Options {
-		line := "  " + opt.Label
+	start, end := 0, len(m.Options)
+	if rows > 0 && len(m.Options) > rows {
+		m.SetVisibleRows(rows)
+		start = m.Offset
+		end = min(len(m.Options), start+rows)
+		if start > 0 {
+			b.WriteString(subtleStyle.Render("↑ more"))
+			b.WriteString("\n")
+		}
+	}
+	for i := start; i < end; i++ {
+		option := m.Options[i]
+		line := "  " + option.Label
 		if i == m.Cursor {
-			line = "> " + opt.Label
+			line = "› " + option.Label
 			b.WriteString(selectedStyle.Render(line))
-			if opt.Description != "" {
-				b.WriteString(" - " + descStyle.Render(opt.Description))
+			if option.Description != "" {
+				b.WriteString("  ")
+				b.WriteString(descStyle.Render(option.Description))
 			}
 		} else {
 			b.WriteString(normalStyle.Render(line))
 		}
+		b.WriteString("\n")
+	}
+	if rows > 0 && end < len(m.Options) {
+		b.WriteString(subtleStyle.Render("↓ more"))
 		b.WriteString("\n")
 	}
 	return b.String()

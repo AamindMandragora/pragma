@@ -14,11 +14,13 @@
       "instructions": "instructions",
       "stream": "stream",
       "max_tokens": "max_output_tokens",
+      "reasoning": "reasoning",
       "tools": "tools",
       "temperature": null
     },
     "stream_events": {
       "text_delta": "response.output_text.delta",
+      "text_done": "response.output_text.done",
       "tool_item_added": "response.output_item.added",
       "tool_args_delta": "response.function_call_arguments.delta",
       "tool_args_done": "response.function_call_arguments.done",

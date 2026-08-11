@@ -55,14 +55,19 @@ type Agent struct {
 	LastModelUsed    string
 	Budget           float64
 	SessionID        uuid.UUID
-	// forceAskUser restricts tool use to ask_user until it is called (plan-mode retry escalation)
+	// ContextMaxTokens bounds the input sent to the provider. The full history
+	// remains available for persistence and is compacted only for requests.
+	ContextMaxTokens int
+	ContextSummary   string
+	contextSummaryAt int
+	compactions      int
 	forceAskUser   bool
 	forceAskReason string
 }
 
 // creates an agent with current model equal to the first one in tiers, builds the system prompt and puts it in the history
 func NewAgent(tiers []llm.ModelTier, registry *tools.Registry, manager *process.Manager) *Agent {
-	a := &Agent{CurrentModel: tiers[0].Model, Registry: registry, Manager: manager, SessionID: uuid.New()}
+	a := &Agent{CurrentModel: tiers[0].Model, Registry: registry, Manager: manager, SessionID: uuid.New(), ContextMaxTokens: DefaultMaxInputTokens}
 	a.ModelTiers = tiers
 	// gets the current working directory for the db session row
 	var cwd, _ = os.Getwd()
@@ -86,7 +91,7 @@ func ResumeAgent(sessionID string, tiers []llm.ModelTier, registry *tools.Regist
 	if err != nil {
 		logger.Printf("Invalid session ID %q: %v", sessionID, err)
 	}
-	a := &Agent{CurrentModel: tiers[0].Model, Registry: registry, Manager: manager, SessionID: parsedId}
+	a := &Agent{CurrentModel: tiers[0].Model, Registry: registry, Manager: manager, SessionID: parsedId, ContextMaxTokens: DefaultMaxInputTokens}
 	a.ModelTiers = tiers
 	prompt := a.buildSystemPrompt()
 	arch := LoadArchitecture()
@@ -130,6 +135,8 @@ Prioritize technical accuracy over validating the user's assumptions. If the use
 You have tools available to inspect files, edit files, run commands, fetch web pages, and work with git. Use them to accomplish tasks — do not ask the user to run commands for you.
 
 - Use read_file to inspect code, configs, prompts, and other repository files before editing them.
+- For large files or outputs, compose the summarize_output filter directly, for example {"filters":[{"name":"summarize_output"}]}; this keeps the full source out of the main conversation.
+- Tool results are complete by default. When only part of a result is useful, compose ordered output filters in the call, for example {"filters":[{"name":"find_issues"}]} or {"filters":[{"name":"tail","args":{"n":50}}]}. Available filters include summarize_output, find_issues, grep, head, tail, line_range, compact_output, dedupe_output, json_pretty, and output_stats.
 - Use write_file to create new files or overwrite files that do not already exist.
 - Use edit_file to make targeted changes to existing files. Provide the exact text to replace and the new text.
 - NEVER use write_file to modify an existing file. Always use edit_file. If edit_file fails because of a text mismatch, use read_file to see the exact content, then retry edit_file with the correct text.
@@ -332,7 +339,7 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 				toolDefs = a.Registry.List()
 			}
 		}
-		ch, err := a.CurrentModel.Provider.Chat(ctx, a.History, toolDefs, *a.CurrentModel)
+		ch, err := a.CurrentModel.Provider.Chat(ctx, a.HistoryForModel(), toolDefs, *a.CurrentModel)
 		if err != nil {
 			return "", err
 		}
@@ -393,8 +400,21 @@ func (a *Agent) Run(ctx context.Context, message string) (string, error) {
 			}
 		}
 
+		for i := range toolCalls {
+			if len(strings.TrimSpace(string(toolCalls[i].Args))) == 0 {
+				toolCalls[i].Args = json.RawMessage(`{}`)
+				continue
+			}
+			if !json.Valid(toolCalls[i].Args) {
+				return "", fmt.Errorf("model returned incomplete arguments for %s; context or output limits may have been reached. Try #compact and retry", toolCalls[i].Name)
+			}
+		}
+
 		// add all the tool calls to the message history once we're done calling
 		if len(toolCalls) == 0 {
+			if strings.TrimSpace(cleanText) == "" {
+				return "", errors.New("model returned no visible response; context or output limits may have been reached. Try #compact and retry")
+			}
 			a.History = append(a.History, llm.Message{Role: "assistant", Content: cleanText})
 			// tries to save the message to the db
 			err := db.SaveMessage(a.SessionID, a.History[len(a.History)-1])

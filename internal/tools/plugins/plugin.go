@@ -1,4 +1,4 @@
-package tools
+package plugins
 
 import (
 	"encoding/json"
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/AamindMandragora/pragma/internal/process"
+	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
 // all tool plugins must have a name, description, schema, command, and a boolean determining whether or not it requires confirmation
@@ -27,7 +28,7 @@ type PluginTool struct {
 }
 
 // reads */tool.json files from the given path, creates the manifest by unmarshaling the data, then gives it the manager and registers it
-func LoadPlugins(registry *Registry, path string, manager *process.Manager) {
+func LoadPlugins(registry *tools.Registry, path string, manager *process.Manager) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return

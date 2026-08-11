@@ -1,4 +1,4 @@
-package tools
+package web
 
 import (
 	"encoding/json"
@@ -73,13 +73,10 @@ func (w WebFetchTool) Execute(args json.RawMessage) (string, error) {
 	if resp.StatusCode != 200 {
 		return fmt.Sprintf("HTTP %d for %s", resp.StatusCode, params.URL), nil
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 500000))
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
 	text := stripHTML(string(body))
-	if len(text) > 15000 {
-		text = text[:15000] + "\n\n... (truncated)"
-	}
 	return text, nil
 }

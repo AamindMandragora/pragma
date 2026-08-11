@@ -1,4 +1,4 @@
-package tools
+package interaction
 
 import (
 	"encoding/json"

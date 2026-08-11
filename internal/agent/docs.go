@@ -13,10 +13,8 @@ import (
 
 // sends a message to the provider asking it to generate a document summarizing what it did in response to the user's request
 func (a *Agent) generateDoc(ctx context.Context) (string, error) {
-	// starts history at the user's chat
-	taskHistory := a.History[a.taskStart:]
-	history := make([]llm.Message, len(taskHistory))
-	copy(history, taskHistory)
+	// Use the same bounded model-facing history as the main loop. Task docs should never become the next source of context exhaustion.
+	history := a.HistoryForModel()
 	history = append(history, llm.Message{Role: "user", Content: `Write a task summary for what just happened. Follow this format exactly:
 
 WHAT: One sentence on what was done.
@@ -83,7 +81,7 @@ func (a *Agent) saveDoc(summary string) error {
 	}
 
 	// writes to the file
-	return os.WriteFile(".agent/docs/tasks/" + timestamp + ".md", []byte(doc.String()), 0644)
+	return os.WriteFile(".agent/docs/tasks/"+timestamp+".md", []byte(doc.String()), 0644)
 }
 
 // reads from ARCHITECTURE.md

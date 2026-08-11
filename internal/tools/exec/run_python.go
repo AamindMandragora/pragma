@@ -66,18 +66,9 @@ func (r *RunPythonTool) Execute(args json.RawMessage) (string, error) {
 	}
 	result := proc.Wait()
 
-	var output string
-	if result.Stdout.Lines() > 100 {
-		errors := result.Stdout.Filter("error|warning|fatal|FAIL|Traceback")
-		if len(errors) > 0 {
-			output = fmt.Sprintf("(%d lines, showing %d errors/warnings)\n\n%s", result.Stdout.Lines(), len(errors), strings.Join(errors, "\n"))
-		} else {
-			tail := result.Stdout.Tail(50)
-			output = fmt.Sprintf("(%d lines, showing last 50)\n\n%s", result.Stdout.Lines(), strings.Join(tail, "\n"))
-		}
-	} else {
-		output = result.Stdout.String()
-	}
+	// Tool output is intentionally complete. Compose an explicit output filter
+	// such as find_issues or tail when a narrower result is wanted.
+	output := result.Stdout.String()
 
 	stderr := result.Stderr.String()
 	if stderr != "" {
