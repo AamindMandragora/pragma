@@ -17,6 +17,12 @@ var db *sql.DB
 //go:embed migrations/*.sql
 var migrations embed.FS
 
+// Migrations exposes the embedded migration files for tests and tooling
+// that need to inspect schema without going through Connect/Migrate.
+func Migrations() embed.FS {
+	return migrations
+}
+
 // connects to the database and sets it up
 func Connect() error {
 	// attempts to create the .agent/ directory

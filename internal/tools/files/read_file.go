@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/AamindMandragora/pragma/internal/process"
 	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
@@ -41,8 +40,8 @@ func (r *ReadFileTool) Execute(args json.RawMessage) (string, error) {
 	if err := json.Unmarshal(args, &fields); err != nil {
 		return "", err
 	}
-	if process.IsIgnored(params.Path) {
-		return "", fmt.Errorf("access denied: %s is in .agentignore", params.Path)
+	if err := checkNotIgnored(params.Path); err != nil {
+		return "", err
 	}
 	contents, err := os.ReadFile(params.Path)
 	if err != nil {

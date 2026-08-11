@@ -104,7 +104,7 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 	if err != nil {
 		return nil, err
 	}
-	o.applyHeaders(req)
+	o.applyHeaders(req, o.Config)
 	ch := make(chan StreamEvent)
 	go func() {
 		defer close(ch)
@@ -278,15 +278,6 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 		ch <- StreamEvent{Type: "done"}
 	}()
 	return ch, nil
-}
-
-func (o *OpenAIProvider) applyHeaders(req *http.Request) {
-	for k, v := range o.Config.Headers {
-		req.Header.Set(k, v)
-	}
-	if o.Config.AuthHeader != "" {
-		req.Header.Set(o.Config.AuthHeader, o.Config.AuthPrefix+o.APIKey)
-	}
 }
 
 // converts our internal message history to Responses API instructions + input items

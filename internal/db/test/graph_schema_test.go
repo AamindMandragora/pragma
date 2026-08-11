@@ -1,10 +1,14 @@
-package db
+package db_test
 
 import (
 	"database/sql"
 	"io/fs"
 	"path/filepath"
 	"testing"
+
+	"github.com/AamindMandragora/pragma/internal/db"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestGraphSchema(t *testing.T) {
@@ -14,6 +18,7 @@ func TestGraphSchema(t *testing.T) {
 	}
 	defer conn.Close()
 
+	migrations := db.Migrations()
 	for _, f := range []string{"001_initial.sql", "002_session_updates.sql", "003_graph.sql"} {
 		b, err := fs.ReadFile(migrations, "migrations/"+f)
 		if err != nil {

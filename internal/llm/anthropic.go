@@ -85,7 +85,7 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 	if err != nil {
 		return nil, err
 	}
-	a.applyHeaders(req)
+	a.applyHeaders(req, a.Config)
 
 	ch := make(chan StreamEvent)
 	go func() {
@@ -218,15 +218,6 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 		}
 	}()
 	return ch, nil
-}
-
-func (a *AnthropicProvider) applyHeaders(req *http.Request) {
-	for k, v := range a.Config.Headers {
-		req.Header.Set(k, v)
-	}
-	if a.Config.AuthHeader != "" {
-		req.Header.Set(a.Config.AuthHeader, a.Config.AuthPrefix+a.APIKey)
-	}
 }
 
 func (a *AnthropicProvider) splitSystem(messages []Message) (string, []map[string]interface{}) {

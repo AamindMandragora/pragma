@@ -73,18 +73,7 @@ func (r *RunPythonTool) Execute(args json.RawMessage) (string, error) {
 
 	// Tool output is intentionally complete. Compose an explicit output filter
 	// such as find_issues or tail when a narrower result is wanted.
-	output := result.Stdout.String()
-
-	stderr := result.Stderr.String()
-	if stderr != "" {
-		output += "\nstderr:\n" + stderr
-	}
-	if result.Status == "timeout" {
-		output += fmt.Sprintf("\n\nProcess timed out after %d seconds", params.Timeout)
-	}
-	if result.ExitCode != 0 {
-		output += fmt.Sprintf("\nExit code: %d", result.ExitCode)
-	}
+	output := result.Format(params.Timeout)
 	result.Stdout.Close()
 	result.Stderr.Close()
 	return output, nil

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/AamindMandragora/pragma/internal/process"
 	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
@@ -35,17 +34,17 @@ func (m *MoveFileTool) Execute(args json.RawMessage) (string, error) {
 		From string `json:"from"`
 		To   string `json:"to"`
 	}
-	if process.IsIgnored(params.From) {
-		return "", fmt.Errorf("access denied: %s is in .agentignore", params.From)
-	}
-	if process.IsIgnored(params.To) {
-		return "", fmt.Errorf("access denied: %s is in .agentignore", params.To)
-	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
 	}
 	if params.From == "" || params.To == "" {
 		return "", fmt.Errorf("from and to are required")
+	}
+	if err := checkNotIgnored(params.From); err != nil {
+		return "", err
+	}
+	if err := checkNotIgnored(params.To); err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(params.To), 0755); err != nil {
 		return "", err

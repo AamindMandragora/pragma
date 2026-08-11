@@ -1,4 +1,4 @@
-package tuitest
+package tui_test
 
 import (
 	"strings"

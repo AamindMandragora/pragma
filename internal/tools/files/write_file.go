@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/AamindMandragora/pragma/internal/process"
 	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
@@ -45,8 +44,8 @@ func (w *WriteFileTool) Execute(args json.RawMessage) (string, error) {
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
 	}
-	if process.IsIgnored(params.Path) {
-		return "", fmt.Errorf("access denied: %s is in .agentignore", params.Path)
+	if err := checkNotIgnored(params.Path); err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(params.Path), 0755); err != nil {
 		return "", err

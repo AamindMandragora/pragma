@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 
@@ -76,6 +77,17 @@ type BaseProvider struct {
 // getter for the provider name
 func (b *BaseProvider) GetName() string {
 	return b.Name
+}
+
+// applyHeaders sets a provider's static headers plus its auth header, shared
+// by every ChatProvider since they all resolve to the same catalog config shape.
+func (b *BaseProvider) applyHeaders(req *http.Request, cfg catalog.ResolvedProvider) {
+	for k, v := range cfg.Headers {
+		req.Header.Set(k, v)
+	}
+	if cfg.AuthHeader != "" {
+		req.Header.Set(cfg.AuthHeader, cfg.AuthPrefix+b.APIKey)
+	}
 }
 
 // the non-config usable model struct

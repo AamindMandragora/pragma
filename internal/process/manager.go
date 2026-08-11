@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,7 +70,22 @@ func (m *Manager) Start(command string, timeout time.Duration, lang string) (*Pr
 	if env := preloadEnv(libPath); env != "" {
 		// if the path exists, append it to the process's env
 		if _, err := os.Stat(libPath); err == nil {
-			cmd.Env = append(os.Environ(), env, "PRAGMA_BLOCKLIST"+GetBlocklist())
+			cmd.Env = append(os.Environ(), env)
+			// writes blocklist to temp file and unlinks it so there's no path pointing to it
+			if tmp, terr := os.CreateTemp("", "pragma-blocklist-*"); terr == nil {
+				name := tmp.Name()
+				_, werr := tmp.WriteString(GetBlocklist())
+				os.Remove(name)
+				if werr == nil {
+					// gives blocklist process the temp file and calculates the file descriptor to send over env
+					fd := 3 + len(cmd.ExtraFiles)
+					cmd.ExtraFiles = append(cmd.ExtraFiles, tmp)
+					cmd.Env = append(cmd.Env, fmt.Sprintf("PRAGMA_BLOCKLIST_FD=%d", fd))
+					defer tmp.Close()
+				} else {
+					tmp.Close()
+				}
+			}
 		}
 	}
 

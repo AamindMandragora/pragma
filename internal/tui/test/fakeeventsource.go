@@ -1,5 +1,5 @@
-// Package tuitest contains helpers used only by TUI tests.
-package tuitest
+// Package tui_test contains helpers used only by TUI tests.
+package tui_test
 
 import (
 	"time"

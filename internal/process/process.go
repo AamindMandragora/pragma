@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/uuid"
 )
@@ -44,4 +45,21 @@ func NewProcess() (*Process, error) {
 func (p *Process) Wait() ProcessResult {
 	<-p.Done
 	return ProcessResult{Status: p.Status, ExitCode: p.ExitCode, Stdout: p.Stdout, Stderr: p.Stderr}
+}
+
+// Format renders stdout, an appended stderr section, an optional timeout
+// notice, and a non-zero exit code notice into a single tool-output string.
+// Call it before closing the result's output buffers.
+func (r ProcessResult) Format(timeoutSeconds int) string {
+	output := r.Stdout.String()
+	if stderr := r.Stderr.String(); stderr != "" {
+		output += "\nstderr:\n" + stderr
+	}
+	if r.Status == "timeout" {
+		output += fmt.Sprintf("\n\nProcess timed out after %d seconds", timeoutSeconds)
+	}
+	if r.ExitCode != 0 {
+		output += fmt.Sprintf("\nExit code: %d", r.ExitCode)
+	}
+	return output
 }

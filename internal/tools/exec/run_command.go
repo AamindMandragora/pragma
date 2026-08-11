@@ -2,7 +2,6 @@ package exec
 
 import (
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/AamindMandragora/pragma/internal/process"
@@ -59,21 +58,7 @@ func (r *RunCommandTool) Execute(args json.RawMessage) (string, error) {
 
 	// Tool output is intentionally complete. Use the composable output filters
 	// (for example find_issues or tail) when a narrower result is wanted.
-	output := result.Stdout.String()
-
-	// appends the stderr to the output
-	stderr := result.Stderr.String()
-	if stderr != "" {
-		output += "\nstderr:\n" + stderr
-	}
-
-	if result.Status == "timeout" {
-		output += fmt.Sprintf("\n\nProcess timed out after %d seconds", params.Timeout)
-	}
-
-	if result.ExitCode != 0 {
-		output += fmt.Sprintf("\nExit code: %d", result.ExitCode)
-	}
+	output := result.Format(params.Timeout)
 
 	// closes process result buffers
 	result.Stdout.Close()

@@ -12,6 +12,9 @@ import (
 	"github.com/AamindMandragora/pragma/internal/tools"
 )
 
+// pluginTimeout bounds how long a plugin command may run before it's killed.
+const pluginTimeout = 5 * time.Minute
+
 // all tool plugins must have a name, description, schema, command, and a boolean determining whether or not it requires confirmation
 type PluginManifest struct {
 	Name        string          `json:"name"`
@@ -78,22 +81,13 @@ func (p *PluginTool) Execute(args json.RawMessage) (string, error) {
 		cmd = strings.ReplaceAll(cmd, placeholder, fmt.Sprintf("%v", val))
 	}
 	// runs the command through the process manager
-	proc, err := p.Manager.Start(cmd, 5*time.Minute, "SHELL")
+	proc, err := p.Manager.Start(cmd, pluginTimeout, "SHELL")
 	if err != nil {
 		return "", err
 	}
 	// waits on the result
 	result := proc.Wait()
-	output := result.Stdout.String()
-	stderr := result.Stderr.String()
-	// adds stderr to the output
-	if stderr != "" {
-		output += "\nstderr:\n" + stderr
-	}
-	// adds exit code to the output
-	if result.ExitCode != 0 {
-		output += fmt.Sprintf("\nexit code: %d", result.ExitCode)
-	}
+	output := result.Format(int(pluginTimeout.Seconds()))
 	// closes buffers and returns
 	result.Stdout.Close()
 	result.Stderr.Close()

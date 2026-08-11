@@ -93,6 +93,9 @@ func LoadSessionMessages(sessionId uuid.UUID) ([]llm.Message, error) {
 		}
 		msgs = append(msgs, msg)
 	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
 	return msgs, nil
 }
 
@@ -119,6 +122,9 @@ func ListSessions(limit int) ([]SessionInfo, error) {
 		session.CreatedAt = time.Unix(created_at, 0)
 		session.UpdatedAt = time.Unix(updated_at, 0)
 		sessions = append(sessions, session)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
 	}
 	return sessions, nil
 }
