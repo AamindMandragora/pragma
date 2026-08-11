@@ -23,8 +23,11 @@ func Connect() error {
 	if err != nil { 
 		return err
 	}
-	// opens .agent/pragma.db, creating if necessary
-	db, err = sql.Open("sqlite", ".agent/pragma.db")
+	// opens .agent/pragma.db, creating if necessary. foreign_keys is off by default in sqlite
+	// and is a per-connection setting, so it goes in the dsn rather than a one-off PRAGMA:
+	// database/sql pools connections and would only apply it to whichever one ran the exec.
+	// without it every ON DELETE CASCADE in the schema is silently ignored
+	db, err = sql.Open("sqlite", ".agent/pragma.db?_pragma=foreign_keys(1)")
 	if err != nil {
 		return err
 	}

@@ -46,6 +46,9 @@ type ModelEntry struct {
 	Providers  []string        `json:"providers"`
 	Pricing    Pricing         `json:"pricing"`
 	Benchmarks json.RawMessage `json:"benchmarks"`
+	// NoTemperature marks models that reject the temperature parameter outright.
+	// defaults to false so older models keep sending it
+	NoTemperature bool `json:"no_temperature"`
 }
 
 // Pricing is USD per 1M tokens.

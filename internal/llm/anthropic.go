@@ -51,12 +51,16 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 	systemPrompt, apiMessages := a.splitSystem(messages)
 
 	logical := map[string]interface{}{
-		"model":       model.Name,
-		"max_tokens":  model.MaxTokens,
-		"system":      systemPrompt,
-		"messages":    apiMessages,
-		"stream":      true,
-		"temperature": model.Temperature,
+		"model":      model.Name,
+		"max_tokens": model.MaxTokens,
+		"system":     systemPrompt,
+		"messages":   apiMessages,
+		"stream":     true,
+	}
+	// newer models (opus 5, opus 4.7/4.8, sonnet 5) reject temperature with a 400,
+	// older ones still take it, so the catalog decides per model
+	if entry, ok := catalog.LookupModel(model.Name); !ok || !entry.NoTemperature {
+		logical["temperature"] = model.Temperature
 	}
 	if len(tools) > 0 {
 		logical["tools"] = a.toAPITools(tools)
@@ -163,12 +167,19 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 
 			case evBlockStop:
 				if tc, ok := activeTools[event.Index]; ok {
+					// tools that take no arguments get no input_json_delta events at all,
+					// so the accumulated args are empty. keep it valid json or the tool call
+					// serializes back as "input": null and the next request 400s
+					args := strings.TrimSpace(tc.args.String())
+					if args == "" {
+						args = "{}"
+					}
 					ch <- StreamEvent{
 						Type: "tool_call",
 						TC: &ToolCall{
 							Id:   tc.id,
 							Name: tc.name,
-							Args: json.RawMessage(tc.args.String()),
+							Args: json.RawMessage(args),
 						},
 					}
 					delete(activeTools, event.Index)
@@ -240,7 +251,11 @@ func (a *AnthropicProvider) splitSystem(messages []Message) (string, []map[strin
 				}
 				for _, tc := range msg.TCs {
 					var parsedArgs interface{}
-					json.Unmarshal(tc.Args, &parsedArgs)
+					// unparseable or absent args (zero-argument tools, older stored history)
+					// must still go out as an object, never null
+					if err := json.Unmarshal(tc.Args, &parsedArgs); err != nil || parsedArgs == nil {
+						parsedArgs = map[string]interface{}{}
+					}
 					content = append(content, map[string]interface{}{
 						"type":  "tool_use",
 						"id":    tc.Id,
