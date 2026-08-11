@@ -2,19 +2,14 @@ package process
 
 import (
 	"context"
-	"os/exec"
-	"time"
 
 	"github.com/google/uuid"
 )
 
-// processes will have an internal uuid, a pid, a name, a command, a start time, a status, an exit code, stdout and stderr buffers, a cleanup function, and a channel that only holds an element when the process is done
+// Process tracks the state and output buffers for a running command.
 type Process struct {
 	Id       string
 	Pid      int
-	Name     string
-	Command  *exec.Cmd
-	Start    time.Time
 	Status   string
 	ExitCode int
 	Stdout   *OutputBuffer
@@ -32,16 +27,16 @@ type ProcessResult struct {
 }
 
 // creates a new process by initializing buffers, then fills in fields
-func NewProcess(command string) (*Process, error) {
-	stdout, err := NewOutputBuffer(100)
+func NewProcess() (*Process, error) {
+	stdout, err := NewOutputBuffer()
 	if err != nil {
 		return nil, err
 	}
-	stderr, err := NewOutputBuffer(100)
+	stderr, err := NewOutputBuffer()
 	if err != nil {
 		return nil, err
 	}
-	var p = &Process{Id: uuid.New().String(), Name: command, Start: time.Now(), Status: "running", Stdout: stdout, Stderr: stderr, Done: make(chan struct{})}
+	var p = &Process{Id: uuid.New().String(), Status: "running", Stdout: stdout, Stderr: stderr, Done: make(chan struct{})}
 	return p, nil
 }
 
@@ -49,14 +44,4 @@ func NewProcess(command string) (*Process, error) {
 func (p *Process) Wait() ProcessResult {
 	<-p.Done
 	return ProcessResult{Status: p.Status, ExitCode: p.ExitCode, Stdout: p.Stdout, Stderr: p.Stderr}
-}
-
-// checks if there's something in the done channel, has stopped if true
-func (p *Process) IsRunning() bool {
-	select {
-	case <-p.Done:
-		return false
-	default:
-		return true
-	}
 }

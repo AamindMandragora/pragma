@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -24,6 +23,7 @@ type openAIStreamEvent struct {
 	Type string `json:"type"`
 
 	Delta string `json:"delta"`
+	Text  string `json:"text"`
 
 	// present on response.output_item.added / .done
 	Item *struct {
@@ -61,6 +61,9 @@ type openAIStreamEvent struct {
 				CachedTokens int `json:"cached_tokens"`
 			} `json:"input_tokens_details"`
 		} `json:"usage"`
+		IncompleteDetails *struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
 	} `json:"response"`
 
 	// present on top-level error events
@@ -78,6 +81,11 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 		"max_tokens":   model.MaxTokens,
 		"temperature":  model.Temperature,
 		"instructions": instructions,
+	}
+	if model.Effort != "" {
+		logical["reasoning"] = map[string]string{
+			"effort": model.Effort,
+		}
 	}
 	if len(tools) > 0 {
 		logical["tools"] = o.toAPITools(tools)
@@ -115,7 +123,7 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 			}
 			return
 		}
-		scanner := bufio.NewScanner(res.Body)
+		scanner := NewStreamScanner(res.Body)
 		type toolCallInProgress struct {
 			id   string
 			name string
@@ -123,12 +131,15 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 		}
 		toolCalls := map[int]*toolCallInProgress{}
 		evText := o.Config.Event("text_delta")
+		evTextDone := o.Config.Event("text_done")
 		evToolAdded := o.Config.Event("tool_item_added")
 		evArgsDelta := o.Config.Event("tool_args_delta")
 		evArgsDone := o.Config.Event("tool_args_done")
 		evCompleted := o.Config.Event("completed")
 		evFailed := o.Config.Event("failed")
 		evError := o.Config.Event("error")
+		terminal := false
+		textReceived := false
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line == "" || line == "data: [DONE]" {
@@ -145,7 +156,14 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 			switch event.Type {
 			case evText:
 				if event.Delta != "" {
+					textReceived = true
 					ch <- StreamEvent{Type: "text", Text: event.Delta}
+				}
+			case evTextDone:
+				// Some OpenAI-compatible endpoints send only the completed text
+				// event. Avoid duplicating it when deltas were already received.
+				if event.Text != "" && !textReceived {
+					ch <- StreamEvent{Type: "text", Text: event.Text}
 				}
 			case evToolAdded:
 				if event.Item != nil && event.Item.Type == "function_call" {
@@ -159,16 +177,31 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 					tc.args.WriteString(event.Delta)
 				}
 			case evArgsDone:
-				if tc, ok := toolCalls[event.OutputIndex]; ok {
-					if event.Name != "" {
-						tc.name = event.Name
-					}
-					if event.Arguments != "" {
-						tc.args.Reset()
-						tc.args.WriteString(event.Arguments)
-					}
+				tc, ok := toolCalls[event.OutputIndex]
+				if !ok {
+					tc = &toolCallInProgress{}
+					toolCalls[event.OutputIndex] = tc
+				}
+				if event.CallID != "" {
+					tc.id = event.CallID
+				}
+				if event.Name != "" {
+					tc.name = event.Name
+				}
+				if event.Arguments != "" {
+					tc.args.Reset()
+					tc.args.WriteString(event.Arguments)
 				}
 			case evCompleted:
+				terminal = true
+				if event.Response != nil && event.Response.Status != "" && event.Response.Status != "completed" {
+					reason := event.Response.Status
+					if event.Response.IncompleteDetails != nil && event.Response.IncompleteDetails.Reason != "" {
+						reason = event.Response.IncompleteDetails.Reason
+					}
+					ch <- StreamEvent{Type: "error", Err: fmt.Errorf("model response incomplete (%s); context or output limits may have been reached", reason)}
+					return
+				}
 				if event.Response != nil && event.Response.Usage != nil {
 					usageModel := event.Response.Model
 					if usageModel == "" {
@@ -189,6 +222,7 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 					}
 				}
 			case evFailed:
+				terminal = true
 				msg := "response failed"
 				if event.Response != nil && event.Response.Error != nil && event.Response.Error.Message != "" {
 					msg = event.Response.Error.Message
@@ -196,6 +230,7 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 				ch <- StreamEvent{Type: "error", Err: fmt.Errorf("%s", msg)}
 				return
 			case evError:
+				terminal = true
 				msg := event.Message
 				if msg == "" {
 					msg = "stream error"
@@ -205,7 +240,11 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			ch <- StreamEvent{Type: "error", Err: err}
+			ch <- StreamEvent{Type: "error", Err: fmt.Errorf("OpenAI response stream: %w", err)}
+			return
+		}
+		if !terminal {
+			ch <- StreamEvent{Type: "error", Err: fmt.Errorf("model stream ended before completion; context or output limits may have been reached")}
 			return
 		}
 		maxIdx := -1
@@ -222,6 +261,10 @@ func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 			args := tc.args.String()
 			if args == "" {
 				args = "{}"
+			}
+			if !json.Valid([]byte(args)) {
+				ch <- StreamEvent{Type: "error", Err: fmt.Errorf("model returned incomplete arguments for %s", tc.name)}
+				return
 			}
 			ch <- StreamEvent{
 				Type: "tool_call",

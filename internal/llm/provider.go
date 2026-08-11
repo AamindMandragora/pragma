@@ -5,11 +5,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"strings"
 
 	"github.com/AamindMandragora/pragma/internal/llm/catalog"
 )
+
+const maxStreamLineSize = 16 * 1024 * 1024
+
+// NewStreamScanner handles SSE events that contain large tool arguments or
+// text deltas. bufio.Scanner's default token limit is only 64 KiB.
+func NewStreamScanner(reader io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 64*1024), maxStreamLineSize)
+	return scanner
+}
 
 // holds the id, name of tool, and args that the llm called with
 type ToolCall struct {
@@ -72,6 +83,7 @@ type Model struct {
 	Name        string
 	MaxTokens   int
 	Temperature float64
+	Effort      string
 	Provider    ChatProvider
 	ToolMode    string
 }
@@ -131,8 +143,12 @@ func ToolModeForProvider(provider string) string {
 
 // function to get the value for a environment variable
 func readKey(varName string) string {
-	// tries a local .env first
-	data, err := os.ReadFile(".env")
+	// tries .agent/.env first
+	data, err := os.ReadFile(".agent/.env")
+	// then tries local
+	if err != nil {
+		data, err = os.ReadFile(".env")
+	}
 	if err == nil {
 		// reads each line in the .env, che
 		scanner := bufio.NewScanner(bytes.NewReader(data))

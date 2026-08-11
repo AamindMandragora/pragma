@@ -14,7 +14,7 @@ func (t *DiffTool) Execute(args json.RawMessage) (string, error) {
 	}
 	_ = json.Unmarshal(args, &params)
 	if params.Ref != "" {
-		return truncate(runGit("diff", params.Ref))
+		return runGit("diff", params.Ref)
 	}
-	return truncate(runGit("diff"))
+	return runGit("diff")
 }

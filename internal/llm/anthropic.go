@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -40,6 +39,7 @@ type anthropicChunk struct {
 		Type        string `json:"type"`
 		Text        string `json:"text"`
 		PartialJSON string `json:"partial_json"`
+		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
 
 	Usage *struct {
@@ -57,6 +57,11 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 		"messages":    apiMessages,
 		"stream":      true,
 		"temperature": model.Temperature,
+	}
+	if model.Effort != "" {
+		logical["output_config"] = map[string]string{
+			"effort": model.Effort,
+		}
 	}
 	if len(tools) > 0 {
 		logical["tools"] = a.toAPITools(tools)
@@ -97,7 +102,7 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 			return
 		}
 
-		scanner := bufio.NewScanner(res.Body)
+		scanner := NewStreamScanner(res.Body)
 		var inputTokens int
 		var cachedInputTokens int
 		var outputTokens int
@@ -175,6 +180,10 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 				}
 
 			case evMsgDelta:
+				if event.Delta != nil && event.Delta.StopReason == "max_tokens" {
+					ch <- StreamEvent{Type: "error", Err: fmt.Errorf("model response incomplete (max_tokens); context or output limits may have been reached")}
+					return
+				}
 				if event.Usage != nil {
 					outputTokens = event.Usage.OutputTokens
 				}
@@ -194,7 +203,7 @@ func (a *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			ch <- StreamEvent{Type: "error", Err: err}
+			ch <- StreamEvent{Type: "error", Err: fmt.Errorf("Anthropic response stream: %w", err)}
 		}
 	}()
 	return ch, nil

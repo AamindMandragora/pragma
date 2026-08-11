@@ -2,7 +2,6 @@ package process
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,7 +24,7 @@ func NewManager() *Manager {
 // creates a new process to run the given command, returns a pointer to it
 func (m *Manager) Start(command string, timeout time.Duration, lang string) (*Process, error) {
 	// creates the new process
-	p, err := NewProcess(command)
+	p, err := NewProcess()
 	if err != nil {
 		return nil, err
 	}
@@ -140,21 +139,13 @@ func (m *Manager) Start(command string, timeout time.Duration, lang string) (*Pr
 	return p, nil
 }
 
-// gets a process owned by the manager by its id
-func (m *Manager) Get(id string) *Process {
+// Cleanup cancels every process currently owned by the manager.
+func (m *Manager) Cleanup() {
 	m.M.Lock()
 	defer m.M.Unlock()
-	return m.Processes[id]
-}
-
-// kills a process owned by the manager by its id
-func (m *Manager) Kill(id string) error {
-	m.M.Lock()
-	p, ok := m.Processes[id]
-	m.M.Unlock()
-	if !ok {
-		return errors.New("Process not found")
+	for _, p := range m.Processes {
+		if p.Cleanup != nil {
+			p.Cleanup()
+		}
 	}
-	p.Cleanup()
-	return nil
 }

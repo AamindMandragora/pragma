@@ -16,6 +16,7 @@
       "stream": "stream",
       "max_tokens": "max_tokens",
       "tools": "tools",
+      "output_config": "output_config",
       "temperature": "temperature"
     },
     "stream_events": {

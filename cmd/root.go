@@ -1,20 +1,17 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
-	"github.com/AamindMandragora/pragma/internal/agent"
+	"github.com/AamindMandragora/pragma/internal/app"
 	"github.com/AamindMandragora/pragma/internal/config"
 	"github.com/AamindMandragora/pragma/internal/db"
-	"github.com/AamindMandragora/pragma/internal/llm"
-	"github.com/AamindMandragora/pragma/internal/process"
-	"github.com/AamindMandragora/pragma/internal/tools"
-	exectools "github.com/AamindMandragora/pragma/internal/tools/exec"
-	filetools "github.com/AamindMandragora/pragma/internal/tools/files"
-	gittools "github.com/AamindMandragora/pragma/internal/tools/git"
 	"github.com/AamindMandragora/pragma/internal/tui"
 	"github.com/spf13/cobra" // the package that allows us to create pragma as a CLI tool, used because it's industry standard
 )
@@ -27,21 +24,33 @@ var (
 	budget       float64 // initial budget pragma will work under
 	oldSession   string  // uuid of a session to be resumed
 	listSessions bool    // true if the user wants to list the past sessions
+	headless     bool    // true when pragma should run one task without the TUI
 )
 
 // defines pragma by the text command the user will type in, short and long help descriptions, and a function to run once called
 var rootCmd = &cobra.Command{
-	Use:   "pragma",
+	Use:   "pragma [prompt]",
 	Short: "pragma is the CLI agentic code helper",
-	Long:  `pragma launches an interactive TUI by default, or runs specialized subcommands.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		// if the user wants to see the version, print it
+	Long:  "pragma launches an interactive TUI by default, or runs one task in headless mode.",
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if showVersion {
 			fmt.Printf("pragma version %s\n", Version)
-			return
+			return nil
 		}
-		// otherwise, launch the terminal UI
+		if headless {
+			return runHeadless(args)
+		}
 		launchTUI()
+		return nil
+	},
+}
+
+var headlessCmd = &cobra.Command{
+	Use:   "headless [prompt]",
+	Short: "run one task without starting the interactive TUI",
+	Args:  cobra.ArbitraryArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runHeadless(args)
 	},
 }
 
@@ -56,23 +65,63 @@ func Execute() {
 // all init functions in a project get run before the main function in main.go, this one adds the version, config, and budget flags to the cli tool
 func init() {
 	rootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "print version information")
-	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "path to custom configuration file")
+	rootCmd.Flags().BoolVar(&headless, "headless", false, "run one task without starting the interactive TUI")
+	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "path to a custom configuration file")
 	rootCmd.PersistentFlags().Float64VarP(&budget, "budget", "b", 0, "max dollar budget for this session")
 	rootCmd.PersistentFlags().StringVarP(&oldSession, "resume", "r", "", "start an old session from where you left off given the uuid")
 	rootCmd.Flags().BoolVarP(&listSessions, "sessions", "s", false, "shows a list of recent session information, max 10 entries")
+	rootCmd.AddCommand(headlessCmd)
+}
+
+// installConfig copies a config supplied on the command line into the normal
+// project-local location used by the rest of Pragma.
+func installConfig() error {
+	if configFile == "" {
+		return nil
+	}
+	if err := os.MkdirAll(".agent", 0755); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(".agent/config.toml", data, 0644)
+}
+
+func loadRuntime() (*app.Runtime, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Connect(); err != nil {
+		return nil, err
+	}
+	if err := db.Migrate(); err != nil {
+		return nil, err
+	}
+	return app.New(cfg)
+}
+
+func printSessions() {
+	sessions, err := db.ListSessions(10)
+	if err != nil {
+		fmt.Print("couldn't fetch sessions\n")
+	} else if sessions == nil {
+		fmt.Print("no previous sessions\n")
+	} else {
+		fmt.Print("sessions:\n")
+		for _, session := range sessions {
+			fmt.Printf("\t- %s\t%s\n", session.Id.String(), session.Title)
+		}
+	}
 }
 
 // performs the setup and starts the TUI
 func launchTUI() {
-	// if the user gave us a config file, we attempt to read it and copy it to .agent/config.toml
-	if configFile != "" {
-		os.MkdirAll(".agent", 0755)
-		data, err := os.ReadFile(configFile)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return
-		}
-		os.WriteFile(".agent/config.toml", data, 0644)
+	if err := installConfig(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
 	}
 	// if there's no .agent/config.toml, we start the tui with nil agent to trigger onboarding
 	if _, err := os.Stat(".agent/config.toml"); os.IsNotExist(err) {
@@ -82,120 +131,101 @@ func launchTUI() {
 			return
 		}
 	}
-	// loads config from .agent/config.toml into a struct
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
-	}
-	// connects to the database
-	err = db.Connect()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
-	}
-	// makes sure the database structure is what we expect
-	err = db.Migrate()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
-	}
 
-	// if the user wants to see the sessions print them out now that we've connected to the db
+	runtime, err := loadRuntime()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
 	if listSessions {
-		sessions, err := db.ListSessions(10)
-		if err != nil {
-			fmt.Print("couldn't fetch sessions\n")
-		} else if sessions == nil {
-			fmt.Print("no previous sessions\n")
-		} else {
-			fmt.Print("sessions:\n")
-			for _, session := range sessions {
-				fmt.Printf("\t- %s\t%s\n", session.Id.String(), session.Title)
-			}
-		}
+		printSessions()
 		return
 	}
-	// sets up the list holding every (model, minPercentBudgetSpent) pair
-	var tiers []llm.ModelTier
-	// loops through every entry in the config
-	for _, t := range cfg.Model.Tiers {
-		// if there's no api key env var name specified, then throw an error
-		if t.ApiKeyVarName == "" {
-			fmt.Fprintf(os.Stderr, "API key not set for tier %s: export %s=<key>\n", t.Model, t.ApiKeyVarName)
-			return
-		}
-		// creates the provider object
-		p := llm.MakeProvider(t.ProviderName, t.ApiKeyVarName)
-		// if the model has a special maxTokens, use that, otherwise default to 4096
-		maxTokens := t.MaxTokens
-		if maxTokens == 0 {
-			maxTokens = 4096
-		}
-		// creates the model object and adds it to the list
-		model := &llm.Model{
-			Name:        t.Model,
-			MaxTokens:   maxTokens,
-			Temperature: t.Temperature,
-			Provider:    p,
-			ToolMode:    llm.ToolModeForProvider(t.ProviderName),
-		}
-		tiers = append(tiers, llm.ModelTier{Model: model, Threshold: t.Threshold})
-	}
 
-	// initializes the process manager and the tools registry
-	manager := process.NewManager()
-	registry := tools.NewRegistry()
-	// registers all the tools we have
-	for _, tool := range filetools.RegisterAll() {
-		registry.Register(tool)
-	}
-	registry.Register(&tools.WebFetchTool{})
-	registry.Register(&tools.AskUserTool{})
-	// passes the manager to the run command tools
-	registry.Register(&exectools.RunCommandTool{Manager: manager})
-	registry.Register(&exectools.RunPythonTool{Manager: manager})
-	for _, tool := range gittools.RegisterAll() {
-		registry.Register(tool)
-	}
-	tools.LoadPlugins(registry, ".agent/tools", manager)
-
-	// creates an agent that holds the model tiers, the registry, and the process manager (resumes an old session if one was given)
-	var a *agent.Agent
-	if oldSession == "" {
-		a = agent.NewAgent(tiers, registry, manager)
-	} else {
-		a = agent.ResumeAgent(oldSession, tiers, registry, manager)
-	}
-	// sets the agent's budget
+	a, manager := runtime.NewAgent(oldSession, true)
 	a.Budget = budget
 
-	// creates a channel to intercept interrupts
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	// this function locks the manager, loops through processes and cleans them up, then unlocks
-	cleanupProcesses := func() {
-		manager.M.Lock()
-		for _, p := range manager.Processes {
-			if p.Cleanup != nil {
-				p.Cleanup()
-			}
-		}
-		manager.M.Unlock()
-	}
-
-	// when tui.Start() returns normally, this fires
-	defer cleanupProcesses()
+	defer signal.Stop(sigChan)
+	defer manager.Cleanup()
 
 	// if we catch a signal that isn't handled in the TUI, then we cleanup manually and exit
 	go func() {
 		<-sigChan
 		fmt.Fprintln(os.Stderr, "\n[pragma] Interrupted, cleaning up...")
-		cleanupProcesses()
+		manager.Cleanup()
 		os.Exit(0)
 	}()
 
 	// starts the TUI with the agent
 	tui.Start(a)
+}
+
+func HeadlessPrompt(args []string, input io.Reader) (string, error) {
+	if len(args) > 0 {
+		return strings.TrimSpace(strings.Join(args, " ")), nil
+	}
+	data, err := io.ReadAll(input)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+// runHeadless executes exactly one agent task and writes only the final agent
+// response to stdout. Prompt input can be supplied as arguments or via stdin;
+// diagnostics and errors go to stderr so the mode is safe to compose in a
+// shell pipeline.
+func runHeadless(args []string) error {
+	prompt, err := HeadlessPrompt(args, os.Stdin)
+	if err != nil {
+		return fmt.Errorf("read headless prompt: %w", err)
+	}
+	if prompt == "" {
+		return fmt.Errorf("headless mode requires a prompt argument or stdin input")
+	}
+	if err := installConfig(); err != nil {
+		return err
+	}
+	runtime, err := loadRuntime()
+	if err != nil {
+		return err
+	}
+	if listSessions {
+		printSessions()
+		return nil
+	}
+
+	a, manager := runtime.NewAgent(oldSession, true)
+	a.Budget = budget
+	// Headless execution cannot pause for a confirmation or an answer. The
+	// caller explicitly selected this mode, so confirmable tools proceed and
+	// ask_user receives a deterministic response instead of blocking forever.
+	a.Registry.Confirm = func(string, string) bool { return true }
+	a.Registry.AskUser = func([]string, string, string) string {
+		return "No interactive user is available in headless mode. Make the safest reasonable assumption or report the blocker."
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer manager.Cleanup()
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
+	go func() {
+		select {
+		case <-sigChan:
+			cancel()
+			manager.Cleanup()
+		case <-ctx.Done():
+		}
+	}()
+
+	result, err := a.Run(ctx, prompt)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stdout, result)
+	return nil
 }
