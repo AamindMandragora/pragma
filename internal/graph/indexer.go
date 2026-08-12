@@ -121,6 +121,13 @@ func EnsureIndexed(root string) error {
 	// out of graph_meta so the next call retries it
 	var files []*parsedFile
 	var byPath = make(map[string]*parsedFile, len(paths))
+	// the trees hold memory allocated by tree-sitter's C library, which the Go
+	// garbage collector does not manage; they have to be released explicitly
+	defer func() {
+		for _, pf := range files {
+			pf.Close()
+		}
+	}()
 	for _, p := range paths {
 		pf, err := parseFile(p, contents[p])
 		if err != nil {

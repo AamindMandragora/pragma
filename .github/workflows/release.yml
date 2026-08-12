@@ -35,11 +35,11 @@ jobs:
             lib_format: dylib
           - goos: windows
             goarch: amd64
-            zig_target: ''
+            zig_target: x86_64-windows-gnu
             lib_format: ''
           - goos: windows
             goarch: arm64
-            zig_target: ''
+            zig_target: aarch64-windows-gnu
             lib_format: ''
 
     steps:
@@ -56,8 +56,9 @@ jobs:
         with:
           version: 0.15.2
 
+      # windows gets no guard library; the syscall shim is unix-only
       - name: Build guard library
-        if: matrix.zig_target != ''
+        if: matrix.lib_format != ''
         env:
           ZIG_TARGET: ${{ matrix.zig_target }}
           LIB_FORMAT: ${{ matrix.lib_format }}
@@ -72,14 +73,21 @@ jobs:
               -o "${LIB_NAME}.dylib" csrc/restrict_open.c
           fi
 
+      # tree-sitter is a C library reached through cgo, so the binary can no longer
+      # be built with CGO_ENABLED=0. zig cc supplies the cross toolchain for every
+      # target from this one runner, which is the same mechanism the guard library
+      # above already relies on
       - name: Build pragma
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '0'
+          ZIG_TARGET: ${{ matrix.zig_target }}
+          CGO_ENABLED: '1'
         shell: bash
         run: |
           set -euo pipefail
+          export CC="zig cc -target ${ZIG_TARGET}"
+          export CXX="zig c++ -target ${ZIG_TARGET}"
           suffix=""
           if [ "$GOOS" = "windows" ]; then
             suffix=".exe"
