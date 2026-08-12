@@ -166,11 +166,12 @@ func (m *TUIModel) View() tea.View {
 }
 
 func (m *TUIModel) viewChat() string {
+	banner := m.renderBanner()
 	header := m.renderHeader()
 	footer := m.renderFooter()
 	composer := m.renderComposer()
 	bottom := composer
-	fixedHeight := max(1, m.height-lipgloss.Height(header)-lipgloss.Height(composer)-lipgloss.Height(footer))
+	fixedHeight := max(1, m.height-lipgloss.Height(banner)-lipgloss.Height(header)-lipgloss.Height(composer)-lipgloss.Height(footer))
 	// Panels have two border rows and one padding row on each side, so leave
 	// enough room for their five-row minimum while a modal is open.
 	cardHeight := max(1, fixedHeight-5)
@@ -183,9 +184,32 @@ func (m *TUIModel) viewChat() string {
 	if m.menu != nil {
 		bottom = lipgloss.JoinVertical(lipgloss.Left, m.renderMenuCard(cardHeight), bottom)
 	}
-	mainHeight := max(5, m.height-lipgloss.Height(header)-lipgloss.Height(bottom)-lipgloss.Height(footer))
+	mainHeight := max(5, m.height-lipgloss.Height(banner)-lipgloss.Height(header)-lipgloss.Height(bottom)-lipgloss.Height(footer))
 	main := m.renderMain(mainHeight)
-	return lipgloss.JoinVertical(lipgloss.Left, header, main, bottom, footer)
+	sections := []string{header, main, bottom, footer}
+	if banner != "" {
+		sections = append([]string{banner}, sections...)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+}
+
+func (m *TUIModel) renderBanner() string {
+	if len(m.events) > 0 || m.confirming || m.planApproval || m.menu != nil {
+		return ""
+	}
+	content := bannerForLayout(m.layoutMode())
+
+	lines := strings.Split(strings.Trim(content, "\n"), "\n")
+	artWidth := 0
+	for _, line := range lines {
+		artWidth = max(artWidth, lipgloss.Width(line))
+	}
+	leftPadding := max(0, (m.width-artWidth)/2)
+	for i, line := range lines {
+		available := max(1, m.width-leftPadding)
+		lines[i] = strings.Repeat(" ", leftPadding) + truncateCells(line, available)
+	}
+	return agentMessage.Render(strings.Join(lines, "\n"))
 }
 
 func (m *TUIModel) renderHeader() string {
@@ -443,9 +467,9 @@ func (m *TUIModel) renderApprovalCard(maxHeight int) string {
 		lines = append(lines, "Reason: "+m.confirmInfo.Reason)
 	}
 	if m.confirmAwaitReason {
-		lines = append(lines, "", keyHintStyle.Render("Type a rejection reason, Enter to submit, Esc to cancel"))
+		lines = append(lines, keyHintStyle.Render("Type a rejection reason, Enter to submit, Esc to cancel"))
 	} else {
-		lines = append(lines, "", keyHintStyle.Render("[Alt+Y] approve once  [Alt+A] approve session  [Alt+E] edit  [Alt+N] reject  [Alt+R] reject with reason"))
+		lines = append(lines, keyHintStyle.Render("[Alt+Y] approve once  [Alt+A] approve session  [Alt+E] edit  [Alt+N] reject  [Alt+R] reject with reason"))
 	}
 	innerWidth := cardContentWidth(width)
 	var wrapped []string

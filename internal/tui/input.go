@@ -563,9 +563,10 @@ func (m *TUIModel) scrollTimeline(delta int) {
 	if m.followTail {
 		if delta > 0 {
 			return
+		} else {
+			m.followTail = false
+			m.timelineScroll = m.timelineMaxOffset
 		}
-		m.followTail = false
-		m.timelineScroll = m.timelineMaxOffset
 	}
 	m.timelineScroll = max(0, m.timelineScroll+delta)
 	if m.timelineScroll >= m.timelineMaxOffset {
@@ -647,6 +648,7 @@ func (m *TUIModel) openHelp() {
 		{Label: "Alt+Enter / Shift+Enter", Description: "insert a newline in the composer"},
 		{Label: "Alt+C", Description: "cancel, then quit"},
 		{Label: "Alt+Y / Alt+A / Alt+E / Alt+N / Alt+R", Description: "approve, approve session, edit, reject, or reject with reason (during approval)"},
+		{Label: "Esc", Description: "stop the active run or clear the composer"},
 		{Label: "HASH COMMANDS", Description: ""},
 		{Label: "#help", Description: "show this shortcuts and hash commands help"},
 		{Label: "#plan", Description: "toggle plan mode"},
@@ -665,7 +667,6 @@ func (m *TUIModel) openHelp() {
 		{Label: "#stop", Description: "stop the active run"},
 		{Label: "#undo", Description: "explain where to undo a reviewed diff"},
 		{Label: "#quit", Description: "quit Pragma"},
-		{Label: "Esc", Description: "stop the active run or clear the composer"},
 	}}
 }
 
