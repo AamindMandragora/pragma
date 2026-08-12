@@ -30,11 +30,19 @@ func Connect() error {
 	if err != nil {
 		return err
 	}
-	// opens .agent/pragma.db, creating if necessary. foreign_keys is off by default in sqlite
+	return ConnectAt(".agent/pragma.db")
+}
+
+// opens the database at an explicit path. Connect uses the normal project-local
+// location; tests point this at a temp file so they can exercise the query
+// helpers without changing the working directory.
+func ConnectAt(path string) error {
+	// opens the file, creating if necessary. foreign_keys is off by default in sqlite
 	// and is a per-connection setting, so it goes in the dsn rather than a one-off PRAGMA:
 	// database/sql pools connections and would only apply it to whichever one ran the exec.
 	// without it every ON DELETE CASCADE in the schema is silently ignored
-	db, err = sql.Open("sqlite", ".agent/pragma.db?_pragma=foreign_keys(1)")
+	var err error
+	db, err = sql.Open("sqlite", path+"?_pragma=foreign_keys(1)")
 	if err != nil {
 		return err
 	}

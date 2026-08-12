@@ -11,6 +11,7 @@ import (
 	"github.com/AamindMandragora/pragma/internal/llm"
 	"github.com/AamindMandragora/pragma/internal/process"
 	"github.com/AamindMandragora/pragma/internal/tools"
+	"github.com/AamindMandragora/pragma/internal/tools/codegraph"
 	exectools "github.com/AamindMandragora/pragma/internal/tools/exec"
 	filetools "github.com/AamindMandragora/pragma/internal/tools/files"
 	"github.com/AamindMandragora/pragma/internal/tools/filters"
@@ -80,6 +81,7 @@ func (r *Runtime) NewAgent(sessionID string, enableSubagent bool) (*agent.Agent,
 	for _, tool := range gittools.RegisterAll() {
 		registry.Register(tool)
 	}
+	registry.Register(&codegraph.Tool{})
 	plugins.LoadPlugins(registry, ".agent/tools", manager)
 
 	if enableSubagent {

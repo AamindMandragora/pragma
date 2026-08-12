@@ -1,7 +1,6 @@
 -- the code graph. three layers over the same set of symbols:
 --   structural (symbols, edges, graph_meta) - what the code is and what connects to what
---   temporal   (
-
+--   temporal   (symbol_history)            - how each symbol changed over time, from git
 --   behavioral (agent_interactions)         - what the agent actually needed, per task
 
 -- one row per named thing in the repo: function, method, type, package-level const/var.
