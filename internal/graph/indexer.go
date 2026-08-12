@@ -150,9 +150,31 @@ func EnsureIndexed(root string) error {
 		}
 	}
 
+	// package symbols have to exist before the imports edges that reference them
+	pkgSyms, pkgByDir, pkgByImport := packageSymbols(files, modulePath(root), root)
+	if err := db.ReplacePackageSymbols(pkgSyms); err != nil {
+		return err
+	}
+
 	// edges are global: reindexing one file cascades away edges owned by files that
 	// did not change, and its own calls may now land somewhere else entirely. patching
 	// them incrementally is where the correctness bugs live, so they are rebuilt whole.
 	// this only runs when something actually changed, which is what keeps it cheap
-	return db.ReplaceEdges(collectEdges(files))
+	return db.ReplaceEdges(collectEdges(files, pkgByDir, pkgByImport))
+}
+
+// the module path from go.mod, used to tell this repo's own imports apart from the
+// standard library and third-party dependencies. an unreadable go.mod just means no
+// import is recognised as internal, so imports edges are skipped rather than wrong
+func modulePath(root string) string {
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return ""
 }

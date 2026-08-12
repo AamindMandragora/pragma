@@ -153,6 +153,34 @@ func ReplaceFileSymbols(filePath string, syms []Symbol) error {
 	return tx.Commit()
 }
 
+// replaces every synthetic package symbol at once. packages are not tied to a
+// single file the way ordinary symbols are, so they cannot go through
+// ReplaceFileSymbols; they are cheap and are rebuilt whenever anything changes,
+// the same way edges are
+func ReplacePackageSymbols(syms []Symbol) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DELETE FROM symbols WHERE kind = 'package'"); err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare("INSERT INTO symbols (" + symbolColumns + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, s := range syms {
+		_, err = stmt.Exec(s.ID, s.FilePath, s.Name, s.Receiver, s.Kind, s.Visibility, s.ByteStart, s.ByteEnd, s.BodyHash)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // rebuilds the entire edge table in one transaction. edges are global: reindexing
 // one file can invalidate edges owned by files that did not change, so they are
 // always rebuilt together rather than patched.
@@ -210,31 +238,41 @@ func SearchSymbols(query string, limit int) ([]Symbol, error) {
 	return scanSymbols(rows)
 }
 
-// every symbol that calls this one. this is the impact-analysis direction and the
-// reason idx_edges_to exists: the primary key only covers the forward walk
-func Callers(symbolID string) ([]Symbol, error) {
+// everything this symbol points at with the given edge kind
+func EdgesOfKind(symbolID, kind string) ([]Symbol, error) {
 	rows, err := db.Query(`SELECT `+symbolColumnsAliased+`
 		FROM edges e
-		JOIN symbols s ON s.id = e.from_symbol_id
-		WHERE e.to_symbol_id = ? AND e.kind = 'calls'
-		ORDER BY s.file_path, s.name`, symbolID)
+		JOIN symbols s ON s.id = e.to_symbol_id
+		WHERE e.from_symbol_id = ? AND e.kind = ?
+		ORDER BY s.file_path, s.name`, symbolID, kind)
 	if err != nil {
 		return nil, err
 	}
 	return scanSymbols(rows)
 }
 
-// every symbol this one calls
-func Callees(symbolID string) ([]Symbol, error) {
+// everything that points at this symbol with the given edge kind. this is the
+// direction idx_edges_to exists for: the primary key only covers the forward walk
+func IncomingOfKind(symbolID, kind string) ([]Symbol, error) {
 	rows, err := db.Query(`SELECT `+symbolColumnsAliased+`
 		FROM edges e
-		JOIN symbols s ON s.id = e.to_symbol_id
-		WHERE e.from_symbol_id = ? AND e.kind = 'calls'
-		ORDER BY s.file_path, s.name`, symbolID)
+		JOIN symbols s ON s.id = e.from_symbol_id
+		WHERE e.to_symbol_id = ? AND e.kind = ?
+		ORDER BY s.file_path, s.name`, symbolID, kind)
 	if err != nil {
 		return nil, err
 	}
 	return scanSymbols(rows)
+}
+
+// every symbol that calls this one, the impact-analysis direction
+func Callers(symbolID string) ([]Symbol, error) {
+	return IncomingOfKind(symbolID, "calls")
+}
+
+// every symbol this one calls
+func Callees(symbolID string) ([]Symbol, error) {
+	return EdgesOfKind(symbolID, "calls")
 }
 
 // looks up one symbol by id, returning ErrSymbolNotFound when it is gone

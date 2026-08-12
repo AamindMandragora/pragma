@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"path/filepath"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -28,6 +27,13 @@ type parsedFile struct {
 	content []byte
 	tree    *sitter.Tree
 	symbols []db.Symbol
+	// import paths exactly as written in the source, used for imports edges
+	imports []string
+	// interface type name to the method names it requires, for implements edges
+	interfaces map[string][]string
+	// receiver type name to the methods declared on it in this file. a type's
+	// methods can be spread across files, so these are merged package-wide later
+	methods map[string][]string
 }
 
 func (p *parsedFile) Close() {
@@ -130,7 +136,13 @@ func parseFile(path string, content []byte) (*parsedFile, error) {
 		return nil, errSyntax
 	}
 
-	pf := &parsedFile{path: path, content: content, tree: tree}
+	pf := &parsedFile{
+		path:       path,
+		content:    content,
+		tree:       tree,
+		interfaces: map[string][]string{},
+		methods:    map[string][]string{},
+	}
 
 	add := func(name, receiver, kind string, n *sitter.Node) {
 		if name == "" || name == "_" {
@@ -171,13 +183,44 @@ func parseFile(path string, content []byte) (*parsedFile, error) {
 			if name == nil {
 				continue
 			}
-			add(name.Content(content), receiverName(decl.ChildByFieldName("receiver"), content), "method", decl)
+			recv := receiverName(decl.ChildByFieldName("receiver"), content)
+			add(name.Content(content), recv, "method", decl)
+			if recv != "" {
+				pf.methods[recv] = append(pf.methods[recv], name.Content(content))
+			}
 		case "type_declaration":
 			for _, spec := range namedChildrenOfType(decl, "type_spec") {
-				if name := spec.ChildByFieldName("name"); name != nil {
-					add(name.Content(content), "", "type", spec)
+				name := spec.ChildByFieldName("name")
+				if name == nil {
+					continue
+				}
+				add(name.Content(content), "", "type", spec)
+				// an interface's method set is what implements edges are matched against
+				if t := spec.ChildByFieldName("type"); t != nil && t.Type() == "interface_type" {
+					var required []string
+					walk(t, func(n *sitter.Node) {
+						if n.Type() != "method_elem" {
+							return
+						}
+						if m := n.ChildByFieldName("name"); m != nil {
+							required = append(required, m.Content(content))
+						}
+					})
+					pf.interfaces[name.Content(content)] = required
 				}
 			}
+		case "import_declaration":
+			walk(decl, func(n *sitter.Node) {
+				if n.Type() != "import_spec" {
+					return
+				}
+				p := n.ChildByFieldName("path")
+				if p == nil {
+					return
+				}
+				// the node text keeps its surrounding quotes
+				pf.imports = append(pf.imports, strings.Trim(p.Content(content), `"`+"`"))
+			})
 		case "const_declaration", "var_declaration":
 			kind := "var"
 			specType := "var_spec"
@@ -206,105 +249,3 @@ func namedChildrenOfType(decl *sitter.Node, kind string) []*sitter.Node {
 	return out
 }
 
-// resolves calls across every parsed file into edges.
-//
-// resolution is name-based and deliberately approximate. a call to Dispatch() is
-// matched against every symbol whose base name is Dispatch, preferring one in the
-// same file and then one in the same package; anything still ambiguous, and
-// anything belonging to the standard library or a dependency, is dropped. a precise
-// graph needs full type resolution, which tree-sitter does not do and which is a
-// much larger commitment than this buys — a name-based graph is already useful for
-// "who calls this", it just occasionally guesses wrong between same-named methods
-func collectEdges(files []*parsedFile) []db.Edge {
-	// base name (method name without its receiver) to every symbol answering to it
-	byName := map[string][]db.Symbol{}
-	for _, pf := range files {
-		for _, s := range pf.symbols {
-			base := s.Name
-			if s.Receiver != "" {
-				base = strings.TrimPrefix(base, s.Receiver+".")
-			}
-			byName[base] = append(byName[base], s)
-		}
-	}
-
-	resolve := func(name, fromFile string) (db.Symbol, bool) {
-		candidates := byName[name]
-		if len(candidates) == 0 {
-			return db.Symbol{}, false
-		}
-		if len(candidates) == 1 {
-			return candidates[0], true
-		}
-		// same file wins, then same directory: both are far likelier than a
-		// same-named symbol somewhere unrelated in the repo
-		for _, c := range candidates {
-			if c.FilePath == fromFile {
-				return c, true
-			}
-		}
-		dir := filepath.Dir(fromFile)
-		var inPkg []db.Symbol
-		for _, c := range candidates {
-			if filepath.Dir(c.FilePath) == dir {
-				inPkg = append(inPkg, c)
-			}
-		}
-		if len(inPkg) == 1 {
-			return inPkg[0], true
-		}
-		return db.Symbol{}, false
-	}
-
-	var edges []db.Edge
-	for _, pf := range files {
-		root := pf.tree.RootNode()
-		for i := 0; i < int(root.NamedChildCount()); i++ {
-			decl := root.NamedChild(i)
-			if decl.Type() != "function_declaration" && decl.Type() != "method_declaration" {
-				continue
-			}
-			body := decl.ChildByFieldName("body")
-			name := decl.ChildByFieldName("name")
-			if body == nil || name == nil {
-				continue
-			}
-			recv := receiverName(decl.ChildByFieldName("receiver"), pf.content)
-			full := name.Content(pf.content)
-			kind := "func"
-			if recv != "" {
-				full = recv + "." + full
-				kind = "method"
-			}
-			from := symbolID(pf.path, full, kind)
-
-			walk(body, func(n *sitter.Node) {
-				if n.Type() != "call_expression" {
-					return
-				}
-				fn := n.ChildByFieldName("function")
-				if fn == nil {
-					return
-				}
-				var called string
-				switch fn.Type() {
-				case "identifier":
-					called = fn.Content(pf.content)
-				case "selector_expression":
-					// covers both pkg.Func() and value.Method(); only the selected
-					// name is used, the operand expression is not resolved
-					if field := fn.ChildByFieldName("field"); field != nil {
-						called = field.Content(pf.content)
-					}
-				}
-				if called == "" {
-					return
-				}
-				if to, ok := resolve(called, pf.path); ok && to.ID != from {
-					edges = append(edges, db.Edge{From: from, To: to.ID, Kind: "calls"})
-				}
-			})
-		}
-	}
-	return edges
-}

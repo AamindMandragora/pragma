@@ -24,11 +24,26 @@ func (t *Tool) Access() tools.AccessLevel {
 }
 
 func (t *Tool) Description() string {
-	return "Queries the indexed code graph of this repository's Go source. Modes: 'search' finds symbols by name, 'callers' lists what calls a symbol (use this to judge the blast radius of a change), 'callees' lists what a symbol calls, and 'source' returns a symbol's source text. Prefer this over grepping for structural questions."
+	return "Queries the indexed code graph of this repository's Go source. 'search' finds symbols by name and 'source' returns a symbol's text. The relationship modes are 'callers' (what calls this — use it to judge the blast radius of a change), 'callees', 'implementers' (what types satisfy this interface), 'implements', 'importers' (what packages depend on this one), 'imports', and 'references' (what mentions this type). Prefer this over grepping for structural questions."
 }
 
 func (t *Tool) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","enum":["search","callers","callees","source"],"description":"Which query to run."},"query":{"type":"string","description":"Search term for mode 'search'; matches symbol names."},"symbol":{"type":"string","description":"Symbol name or id for modes 'callers', 'callees', and 'source'. A name is resolved automatically; if it is ambiguous the candidates are listed."},"limit":{"type":"integer","minimum":1,"description":"Maximum results for mode 'search'. Defaults to 20."}},"required":["mode"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","enum":["search","source","callers","callees","implementers","implements","importers","imports","references"],"description":"Which query to run."},"query":{"type":"string","description":"Search term for mode 'search'; matches symbol names."},"symbol":{"type":"string","description":"Symbol name or id for every mode except 'search'. A name is resolved automatically; if it is ambiguous the candidates are listed. For 'importers' and 'imports' this is a package import path."},"limit":{"type":"integer","minimum":1,"description":"Maximum results for mode 'search'. Defaults to 20."}},"required":["mode"]}`)
+}
+
+// each relationship mode is one edge kind walked in one direction. incoming means
+// "what points at this", which is the impact-analysis question
+var relationModes = map[string]struct {
+	kind     string
+	incoming bool
+}{
+	"callers":      {"calls", true},
+	"callees":      {"calls", false},
+	"implementers": {"implements", true},
+	"implements":   {"implements", false},
+	"importers":    {"imports", true},
+	"imports":      {"imports", false},
+	"references":   {"type_refs", true},
 }
 
 func (t *Tool) Execute(args json.RawMessage) (string, error) {
@@ -62,16 +77,33 @@ func (t *Tool) Execute(args json.RawMessage) (string, error) {
 		}
 		return formatSymbols(syms), nil
 
-	case "callers", "callees":
+	case "source":
+		sym, err := resolveSymbol(params.Symbol)
+		if err != nil {
+			return "", err
+		}
+		// package symbols are synthetic and stand for a directory, so there is no
+		// source text to slice out of a file
+		if sym.Kind == "package" {
+			return fmt.Sprintf("%s is a package (%s), not a symbol with source. Use mode 'imports' or 'importers' on it.", sym.Name, sym.FilePath), nil
+		}
+		src, err := db.SymbolSource(sym)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s %s (%s):\n%s", sym.Kind, sym.Name, sym.FilePath, src), nil
+	}
+
+	if rel, ok := relationModes[params.Mode]; ok {
 		sym, err := resolveSymbol(params.Symbol)
 		if err != nil {
 			return "", err
 		}
 		var syms []db.Symbol
-		if params.Mode == "callers" {
-			syms, err = db.Callers(sym.ID)
+		if rel.incoming {
+			syms, err = db.IncomingOfKind(sym.ID, rel.kind)
 		} else {
-			syms, err = db.Callees(sym.ID)
+			syms, err = db.EdgesOfKind(sym.ID, rel.kind)
 		}
 		if err != nil {
 			return "", err
@@ -80,19 +112,8 @@ func (t *Tool) Execute(args json.RawMessage) (string, error) {
 			return fmt.Sprintf("No %s found for %s (%s).", params.Mode, sym.Name, sym.FilePath), nil
 		}
 		return fmt.Sprintf("%s of %s (%s):\n%s", params.Mode, sym.Name, sym.FilePath, formatSymbols(syms)), nil
-
-	case "source":
-		sym, err := resolveSymbol(params.Symbol)
-		if err != nil {
-			return "", err
-		}
-		src, err := db.SymbolSource(sym)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("%s %s (%s):\n%s", sym.Kind, sym.Name, sym.FilePath, src), nil
 	}
-	return "", fmt.Errorf("unknown mode %q: use search, callers, callees, or source", params.Mode)
+	return "", fmt.Errorf("unknown mode %q: use search, source, callers, callees, implementers, implements, importers, imports, or references", params.Mode)
 }
 
 // accepts either a symbol id or a name. the model works in names, so an exact id
