@@ -62,6 +62,37 @@ func TestShellRendersResponsiveLayouts(t *testing.T) {
 	}
 }
 
+func TestLaunchBannerMatchesShellLayout(t *testing.T) {
+	tests := []struct {
+		name  string
+		width int
+		want  string
+	}{
+		{name: "no side panels", width: 64, want: "#-."},
+		{name: "one side panel", width: 100, want: "################"},
+		{name: "two side panels", width: 140, want: ":--:#######."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := chatModel()
+			m.Update(tea.WindowSizeMsg{Width: tt.width, Height: 30})
+			view := m.View().Content
+			firstLine := strings.Split(view, "\n")[0]
+			if !strings.Contains(firstLine, "....") {
+				t.Fatalf("banner was not rendered at the top: %q", firstLine)
+			}
+			if !strings.Contains(view, tt.want) {
+				t.Fatalf("layout banner missing %q: %q", tt.want, view)
+			}
+			for _, line := range strings.Split(view, "\n") {
+				if lipgloss.Width(line) > tt.width+2 {
+					t.Errorf("line is wider than terminal (%d > %d): %q", lipgloss.Width(line), tt.width+2, line)
+				}
+			}
+		})
+	}
+}
+
 func TestTypedTimelineMessagesAndOutputCap(t *testing.T) {
 	m := chatModel()
 	m.Update(tui.ToolStartedMsg{ID: "tool-1", Name: "go test", Summary: "go test ./..."})

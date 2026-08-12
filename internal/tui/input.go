@@ -563,9 +563,10 @@ func (m *TUIModel) scrollTimeline(delta int) {
 	if m.followTail {
 		if delta > 0 {
 			return
+		} else {
+			m.followTail = false
+			m.timelineScroll = m.timelineMaxOffset
 		}
-		m.followTail = false
-		m.timelineScroll = m.timelineMaxOffset
 	}
 	m.timelineScroll = max(0, m.timelineScroll+delta)
 	if m.timelineScroll >= m.timelineMaxOffset {
