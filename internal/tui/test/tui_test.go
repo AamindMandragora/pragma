@@ -70,7 +70,7 @@ func TestLaunchBannerMatchesShellLayout(t *testing.T) {
 	}{
 		{name: "no side panels", width: 64, want: "#-."},
 		{name: "one side panel", width: 100, want: "################"},
-		{name: "two side panels", width: 140, want: ":--:#######."},
+		{name: "two side panels", width: 140, want: ":--:########"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -78,7 +78,7 @@ func TestLaunchBannerMatchesShellLayout(t *testing.T) {
 			m.Update(tea.WindowSizeMsg{Width: tt.width, Height: 30})
 			view := m.View().Content
 			firstLine := strings.Split(view, "\n")[0]
-			if !strings.Contains(firstLine, "....") {
+			if !strings.Contains(firstLine, ".''") {
 				t.Fatalf("banner was not rendered at the top: %q", firstLine)
 			}
 			if !strings.Contains(view, tt.want) {

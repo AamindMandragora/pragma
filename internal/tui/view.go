@@ -467,9 +467,9 @@ func (m *TUIModel) renderApprovalCard(maxHeight int) string {
 		lines = append(lines, "Reason: "+m.confirmInfo.Reason)
 	}
 	if m.confirmAwaitReason {
-		lines = append(lines, "", keyHintStyle.Render("Type a rejection reason, Enter to submit, Esc to cancel"))
+		lines = append(lines, keyHintStyle.Render("Type a rejection reason, Enter to submit, Esc to cancel"))
 	} else {
-		lines = append(lines, "", keyHintStyle.Render("[Alt+Y] approve once  [Alt+A] approve session  [Alt+E] edit  [Alt+N] reject  [Alt+R] reject with reason"))
+		lines = append(lines, keyHintStyle.Render("[Alt+Y] approve once  [Alt+A] approve session  [Alt+E] edit  [Alt+N] reject  [Alt+R] reject with reason"))
 	}
 	innerWidth := cardContentWidth(width)
 	var wrapped []string
